@@ -1,0 +1,76 @@
+# ==========================================
+# Library Management System ERP
+# MERN Project
+# ==========================================
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Build output
+dist/
+build/
+.vite/
+
+# TypeScript
+*.tsbuildinfo
+
+# Testing
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+
+# MongoDB / local database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime
+*.pid
+*.pid.lock
+
+# Certificates / secrets
+*.pem
+*.key
+
+# AI / ML generated files
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Uploads
+uploads/
+storage/
+
+# Generated reports
+reports/generated/
+# Frontend environment variables
+client/.env
+client/.env.*
+!client/.env.example
+
+# Vite
+client/.vite/
