@@ -1,10 +1,11 @@
 import { NextFunction, Request, Response } from "express";
 import { verifyAccessToken } from "../utils/jwt.js";
+import { Role } from "../constants/roles.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
     userId: string;
-    role: string;
+    role: Role;
   };
 }
 
@@ -44,13 +45,15 @@ export const authenticate = (
       return;
     }
 
-    req.user = {
+       req.user = {
       userId: payload.userId,
-      role: payload.role,
+      role: payload.role as Role,
     };
 
     next();
-  } catch {
+  } catch (error) {
+    console.error("JWT authentication error:", error);
+
     res.status(401).json({
       success: false,
       message: "Invalid or expired access token",

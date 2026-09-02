@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "description": "Backend API for Library Management System ERP",
   "main": "dist/server.js",
-  "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js",
-    "test": "echo \"Tests not configured yet\""
-  },
+"scripts": {
+  "dev": "tsx watch src/server.ts",
+  "build": "tsc",
+  "start": "node dist/server.js",
+  "bootstrap:admin": "tsx src/utils/bootstrapAdmin.ts",
+  "test": "echo \"Tests not configured yet\""
+},
   "keywords": [
     "library",
     "management",

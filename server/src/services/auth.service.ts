@@ -19,7 +19,7 @@ import {
   comparePassword,
   hashPassword,
 } from "../utils/password.js";
-import { Role } from "../constants/roles.js";
+
 
 const hashToken = (token: string): string => {
   return crypto
@@ -60,16 +60,30 @@ export const login = async (
   email: string,
   password: string
 ) => {
-  const user = await findUserByEmail(email);
+ const user = await findUserByEmail(email);
 
-  if (!user) {
-    throw new Error("Invalid email or password");
-  }
+console.log("LOGIN DEBUG:", {
+  email,
+  userFound: !!user,
+  userId: user?._id?.toString(),
+  userEmail: user?.email,
+  userStatus: user?.status,
+  userRole: user?.role,
+});
 
-  const validPassword = await comparePassword(
-    password,
-    user.passwordHash
-  );
+if (!user) {
+  throw new Error("Invalid email or password");
+}
+
+ const validPassword = await comparePassword(
+  password,
+  user.passwordHash
+);
+
+console.log("PASSWORD DEBUG:", {
+  validPassword,
+  hasPasswordHash: !!user.passwordHash,
+});
 
   if (!validPassword) {
     throw new Error("Invalid email or password");

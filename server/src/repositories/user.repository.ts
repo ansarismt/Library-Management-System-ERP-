@@ -1,4 +1,5 @@
 import { User } from "../models/User.js";
+import { Role } from "../constants/roles.js";
 
 export const findUserByEmail = async (email: string) => {
   return User.findOne({
@@ -14,7 +15,7 @@ export const createUser = async (data: {
   name: string;
   email: string;
   passwordHash: string;
-  role: string;
+  role: Role;
 }) => {
   return User.create(data);
 };
@@ -26,7 +27,7 @@ export const updateLastLogin = async (userId: string) => {
       lastLogin: new Date(),
     },
     {
-      returnDocument: "after"
+      returnDocument: "after",
     }
   );
 };

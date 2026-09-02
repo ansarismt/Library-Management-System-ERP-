@@ -1,20 +1,25 @@
 {
-  "name": "library-management-system-erp-",
+  "name": "library-management-system-erp",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "directories": {
-    "doc": "docs",
-    "test": "tests"
-  },
+  "description": "Library Management System ERP",
   "scripts": {
+    "dev": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "dev:server": "npm --prefix server run dev",
+     "bootstrap:admin": "tsx src/utils/bootstrapAdmin.ts",
+    "build": "npm --prefix client run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ansarismt/Library-Management-System-ERP-.git"
   },
-  "keywords": [],
+  "keywords": [
+    "library",
+    "management",
+    "erp",
+    "mern"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
