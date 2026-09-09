@@ -7,6 +7,7 @@ import {
   deleteBook as deleteBookRepository,
   CreateBookData,
 } from "../repositories/book.repository.js";
+import { PaginatedResult, PaginationQuery } from "../types/pagination.js";
 
 export const createBook = async (
   data: CreateBookData
@@ -26,8 +27,10 @@ export const getBookByIsbn = async (
   return getBookByIsbnRepository(isbn);
 };
 
-export const getBooks = async () => {
-  return getBooksRepository();
+export const getBooks = async (
+  query: PaginationQuery
+): Promise<PaginatedResult<Awaited<ReturnType<typeof getBooksRepository>>["items"][number]>> => {
+  return getBooksRepository(query);
 };
 
 export const updateBook = async (

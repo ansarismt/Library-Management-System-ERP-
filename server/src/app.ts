@@ -10,14 +10,29 @@ import bookRoutes from "./routes/book.routes.js";
 import memberRoutes from "./routes/member.routes.js";
 import issueRoutes from "./routes/issue.routes.js";
 import fineRoutes from "./routes/fine.routes.js";
+import reservationRoutes from "./routes/reservation.routes.js";
+import reportRoutes from "./routes/report.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
+import auditRoutes from "./routes/audit.routes.js";
+import {
+  errorHandler,
+  notFoundHandler,
+} from "./middleware/error.middleware.js";
+import { apiLimiter } from "./middleware/rate-limit.middleware.js";
 
 const app = express();
 const allowedOrigins = (process.env.CLIENT_URL ?? "http://localhost:5173")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
+const configuredProxyHops = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+const trustProxyHops = Number.isInteger(configuredProxyHops) && configuredProxyHops >= 0
+  ? configuredProxyHops
+  : 0;
 
-app.set("trust proxy", 1);
+// Direct deployments must not accept client-supplied X-Forwarded-For values.
+// Set this to the exact number of trusted reverse-proxy hops when applicable.
+app.set("trust proxy", trustProxyHops);
 app.use(helmet({ crossOriginResourcePolicy: false }));
 
 app.use(
@@ -49,6 +64,9 @@ app.get("/api/v1/health", (_req, res) => {
   });
 });
 
+// Health remains available for monitoring; API traffic is limited below it.
+app.use("/api/v1", apiLimiter);
+
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", userRoutes);
 app.use("/api/v1/book-copies", bookCopyRoutes);
@@ -56,5 +74,12 @@ app.use("/api/v1/books", bookRoutes);
 app.use("/api/v1/members", memberRoutes);
 app.use("/api/v1/issues", issueRoutes);
 app.use("/api/v1/fines", fineRoutes);
+app.use("/api/v1/reservations", reservationRoutes);
+app.use("/api/v1/reports", reportRoutes);
+app.use("/api/v1/dashboard", dashboardRoutes);
+app.use("/api/v1/audit-logs", auditRoutes);
+
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 export default app;

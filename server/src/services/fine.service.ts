@@ -54,7 +54,8 @@ const calculateDaysOverdue = (
 
 export const calculateFineService =
   async (
-    issueId: string
+    issueId: string,
+    session?: mongoose.ClientSession
   ) => {
     if (
       !mongoose.Types.ObjectId.isValid(
@@ -67,9 +68,9 @@ export const calculateFineService =
     }
 
     const issue =
-      await Issue.findById(
-        issueId
-      );
+  await Issue.findById(
+    issueId
+  ).session(session || null);
 
     if (!issue) {
       throw new Error(
@@ -78,9 +79,9 @@ export const calculateFineService =
     }
 
     const member =
-      await Member.findById(
-        issue.memberId
-      );
+  await Member.findById(
+    issue.memberId
+  ).session(session || null);
 
     if (!member) {
       throw new Error(
@@ -92,64 +93,65 @@ export const calculateFineService =
       issue.returnedAt ||
       new Date();
 
-    const daysOverdue =
-      calculateDaysOverdue(
-        issue.dueAt,
-        endDate
-      );
+    const daysOverdue = calculateDaysOverdue(issue.dueAt, endDate);
 
-    if (daysOverdue <= 0) {
-      throw new Error(
-        "This issue is not overdue"
-      );
-    }
+if (daysOverdue <= 0) {
+  return null;
+}
 
     const amount =
       daysOverdue *
       DEFAULT_FINE_RATE_PER_DAY;
 
     const existingFine =
-      await getFineByIssueId(
-        issueId
-      );
+  await getFineByIssueId(
+    issueId,
+    session
+  );
 
     if (existingFine) {
       const updated =
-        await updateFine(
-          existingFine._id.toString(),
-          {
-            amount,
-            daysOverdue,
-            ratePerDay:
-              DEFAULT_FINE_RATE_PER_DAY,
-          }
-        );
+  await updateFine(
+    existingFine._id.toString(),
+    {
+      amount,
+      daysOverdue,
+      ratePerDay:
+        DEFAULT_FINE_RATE_PER_DAY,
+    },
+    session
+  );
 
       return updated;
     }
 
     const fine =
-      await createFine({
-        issueId,
-        memberId:
-          issue.memberId.toString(),
-        bookId:
-          issue.bookId.toString(),
+  await createFine(
+    {
+      issueId,
+      memberId:
+        issue.memberId.toString(),
+      bookId:
+        issue.bookId.toString(),
 
-        amount,
+      amount,
 
-        daysOverdue,
+      daysOverdue,
 
-        ratePerDay:
-          DEFAULT_FINE_RATE_PER_DAY,
+      ratePerDay:
+        DEFAULT_FINE_RATE_PER_DAY,
 
-        status:
-          "UNPAID",
-      });
+      status:
+        "UNPAID",
+    },
+    session
+  );
 
-    return getFineById(
-      fine._id.toString()
-    );
+    if (session) {
+      return fine;
+    }
+
+    return getFineById(fine._id.toString());
   };
 
 
@@ -158,8 +160,8 @@ export const calculateFineService =
 ========================================================= */
 
 export const listFinesService =
-  async () => {
-    return getFines();
+  async (query: import("../types/pagination.js").PaginationQuery) => {
+    return getFines(query);
   };
 
 
@@ -271,84 +273,103 @@ export const payFineService =
       );
     }
 
-    const fine =
-      await getFineById(
-        fineId
-      );
+    const session =
+      await mongoose.startSession();
 
-    if (!fine) {
-      throw new Error(
-        "Fine not found"
-      );
-    }
+    try {
+      let updatedFine;
 
-    if (
-      fine.status === "PAID"
-    ) {
-      throw new Error(
-        "Fine is already fully paid"
-      );
-    }
+      await session.withTransaction(
+        async () => {
+          const fine =
+            await getFineById(
+              fineId,
+              session
+            );
 
-    if (
-      fine.status === "WAIVED"
-    ) {
-      throw new Error(
-        "Waived fine cannot be paid"
-      );
-    }
+          if (!fine) {
+            throw new Error(
+              "Fine not found"
+            );
+          }
 
-    const remaining =
-      fine.amount -
-      fine.paidAmount;
+          if (
+            fine.status === "PAID"
+          ) {
+            throw new Error(
+              "Fine is already fully paid"
+            );
+          }
 
-    if (
-      data.amount > remaining
-    ) {
-      throw new Error(
-        `Payment exceeds remaining fine amount of ${remaining}`
-      );
-    }
+          if (
+            fine.status === "WAIVED"
+          ) {
+            throw new Error(
+              "Waived fine cannot be paid"
+            );
+          }
 
-    const newPaidAmount =
-      fine.paidAmount +
-      data.amount;
+          const remaining =
+            fine.amount -
+            fine.paidAmount;
 
-    const newStatus =
-      newPaidAmount >= fine.amount
-        ? "PAID"
-        : "PARTIAL";
+          if (
+            data.amount > remaining
+          ) {
+            throw new Error(
+              `Payment exceeds remaining fine amount of ${remaining}`
+            );
+          }
 
-    const updated =
-      await updateFine(
-        fineId,
-        {
-          paidAmount:
-            newPaidAmount,
+          const newPaidAmount =
+            fine.paidAmount +
+            data.amount;
 
-          status:
-            newStatus,
+          const newStatus =
+            newPaidAmount >= fine.amount
+              ? "PAID"
+              : "PARTIAL";
 
-          paymentMethod:
-            data.paymentMethod as any,
+          updatedFine =
+            await updateFine(
+              fineId,
+              {
+                paidAmount:
+                  newPaidAmount,
 
-          paidAt:
-            new Date(),
+                status:
+                  newStatus,
 
-          paidBy:
-            data.paidBy,
+                paymentMethod:
+                  data.paymentMethod as any,
+
+                paidAt:
+                  new Date(),
+
+                paidBy:
+                  data.paidBy,
+              },
+              session,
+              {
+                paidAmount: fine.paidAmount,
+                status: fine.status,
+              }
+            );
+
+          if (!updatedFine) {
+            throw new Error(
+              "Failed to record payment"
+            );
+          }
         }
       );
 
-    if (!updated) {
-      throw new Error(
-        "Failed to record payment"
+      return getFineById(
+        fineId
       );
+    } finally {
+      await session.endSession();
     }
-
-    return getFineById(
-      fineId
-    );
   };
 
 

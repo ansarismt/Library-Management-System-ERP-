@@ -3,6 +3,20 @@ import { Router } from "express";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizePermission } from "../middleware/authorization.middleware.js";
 import { PERMISSIONS } from "../constants/permissions.js";
+import {
+  validateBody,
+  validateParams,
+  validateQuery,
+} from "../middleware/validation.middleware.js";
+import {
+  fineIdParamsSchema,
+  fineIssueParamsSchema,
+  fineMemberParamsSchema,
+  payFineBodySchema,
+  waiveFineBodySchema,
+} from "../validators/fine.validator.js";
+import { finesQuerySchema } from "../validators/list.validator.js";
+import { sensitiveMutationLimiter } from "../middleware/rate-limit.middleware.js";
 
 import {
   listFinesController,
@@ -26,6 +40,7 @@ router.get(
   authorizePermission(
     PERMISSIONS.FINE_READ
   ),
+  validateQuery(finesQuerySchema),
   listFinesController
 );
 
@@ -41,6 +56,7 @@ router.get(
   authorizePermission(
     PERMISSIONS.FINE_READ
   ),
+  validateParams(fineMemberParamsSchema),
   getMemberFinesController
 );
 
@@ -51,9 +67,11 @@ router.get(
 router.post(
   "/calculate/:issueId",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(
     PERMISSIONS.FINE_CREATE
   ),
+  validateParams(fineIssueParamsSchema),
   calculateFineController
 );
 
@@ -64,9 +82,12 @@ router.post(
 router.post(
   "/:id/pay",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(
     PERMISSIONS.FINE_UPDATE
   ),
+  validateParams(fineIdParamsSchema),
+  validateBody(payFineBodySchema),
   payFineController
 );
 
@@ -77,9 +98,12 @@ router.post(
 router.post(
   "/:id/waive",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(
     PERMISSIONS.FINE_WAIVE
   ),
+  validateParams(fineIdParamsSchema),
+  validateBody(waiveFineBodySchema),
   waiveFineController
 );
 
@@ -93,6 +117,7 @@ router.get(
   authorizePermission(
     PERMISSIONS.FINE_READ
   ),
+  validateParams(fineIdParamsSchema),
   getFineController
 );
 
@@ -103,9 +128,11 @@ router.get(
 router.delete(
   "/:id",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(
     PERMISSIONS.FINE_UPDATE
   ),
+  validateParams(fineIdParamsSchema),
   deleteFineController
 );
 

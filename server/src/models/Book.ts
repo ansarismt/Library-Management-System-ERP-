@@ -117,4 +117,6 @@ const bookSchema = new Schema<IBook>(
   }
 );
 
+bookSchema.index({ status: 1, category: 1, createdAt: -1 });
+
 export const Book = mongoose.model<IBook>("Book", bookSchema);

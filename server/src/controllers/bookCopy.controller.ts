@@ -8,6 +8,8 @@ import {
   updateBookCopyService,
   deleteBookCopyService,
 } from "../services/bookCopy.service.js";
+import { AUDIT_ACTIONS } from "../constants/auditActions.js";
+import { auditRequest } from "../services/audit.service.js";
 
 export const createBookCopyController = async (
   req: Request,
@@ -15,6 +17,22 @@ export const createBookCopyController = async (
 ): Promise<void> => {
   try {
     const copy = await createBookCopyService(req.body);
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.BOOK_COPY_CREATED,
+      resourceType: "BOOK_COPY",
+      resourceId: copy._id.toString(),
+      description: "Book copy created",
+      after: {
+        bookId: copy.bookId,
+        accessionNumber: copy.accessionNumber,
+        barcode: copy.barcode,
+        status: copy.status,
+        condition: copy.condition,
+      },
+      success: true,
+      statusCode: 201,
+    });
 
     res.status(201).json({
       success: true,
@@ -35,15 +53,16 @@ export const createBookCopyController = async (
 };
 
 export const listBookCopiesController = async (
-  _req: Request,
+  req: Request,
   res: Response
 ): Promise<void> => {
   try {
-    const copies = await listBookCopiesService();
+    const copies = await listBookCopiesService(req.query as never);
 
     res.status(200).json({
       success: true,
-      data: copies,
+      data: copies.items,
+      pagination: copies.pagination,
     });
   } catch (error) {
     const message =
@@ -74,11 +93,12 @@ export const listBookCopiesByBookController = async (
     }
 
     const copies =
-      await listBookCopiesByBookService(bookId);
+      await listBookCopiesByBookService(bookId, req.query as never);
 
     res.status(200).json({
       success: true,
-      data: copies,
+      data: copies.items,
+      pagination: copies.pagination,
     });
   } catch (error) {
     const message =
@@ -142,10 +162,34 @@ export const updateBookCopyController = async (
       return;
     }
 
+    const beforeCopy = await getBookCopyService(id);
     const copy = await updateBookCopyService(
       id,
       req.body
     );
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.BOOK_COPY_UPDATED,
+      resourceType: "BOOK_COPY",
+      resourceId: id,
+      description: "Book copy updated",
+      before: {
+        bookId: beforeCopy.bookId,
+        accessionNumber: beforeCopy.accessionNumber,
+        barcode: beforeCopy.barcode,
+        status: beforeCopy.status,
+        condition: beforeCopy.condition,
+      },
+      after: copy ? {
+        bookId: copy.bookId,
+        accessionNumber: copy.accessionNumber,
+        barcode: copy.barcode,
+        status: copy.status,
+        condition: copy.condition,
+      } : undefined,
+      success: true,
+      statusCode: 200,
+    });
 
     res.status(200).json({
       success: true,
@@ -181,6 +225,22 @@ export const deleteBookCopyController = async (
     }
 
     const copy = await deleteBookCopyService(id);
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.BOOK_COPY_DELETED,
+      resourceType: "BOOK_COPY",
+      resourceId: id,
+      description: "Book copy deleted",
+      before: copy ? {
+        bookId: copy.bookId,
+        accessionNumber: copy.accessionNumber,
+        barcode: copy.barcode,
+        status: copy.status,
+        condition: copy.condition,
+      } : undefined,
+      success: true,
+      statusCode: 200,
+    });
 
     res.status(200).json({
       success: true,

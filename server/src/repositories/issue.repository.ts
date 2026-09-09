@@ -1,4 +1,7 @@
 import mongoose from "mongoose";
+import { PaginatedResult, PaginationQuery } from "../types/pagination.js";
+import { createPaginationMetadata, getPaginationOptions } from "../utils/pagination.js";
+import { escapeRegex } from "../utils/search.js";
 import {
   Issue,
   IIssue,
@@ -36,61 +39,87 @@ export interface UpdateIssueData {
   notes?: string;
 }
 
+/**
+ * Create issue
+ */
 export const createIssue = async (
-  data: CreateIssueData
+  data: CreateIssueData,
+  session?: mongoose.ClientSession
 ): Promise<IIssue> => {
-  const issue = await Issue.create({
-    bookId: new mongoose.Types.ObjectId(
-      data.bookId
-    ),
+  const issues = await Issue.create(
+    [
+      {
+        bookId: new mongoose.Types.ObjectId(
+          data.bookId
+        ),
 
-    bookCopyId: new mongoose.Types.ObjectId(
-      data.bookCopyId
-    ),
+        bookCopyId: new mongoose.Types.ObjectId(
+          data.bookCopyId
+        ),
 
-    memberId: new mongoose.Types.ObjectId(
-      data.memberId
-    ),
+        memberId: new mongoose.Types.ObjectId(
+          data.memberId
+        ),
 
-    issuedBy: new mongoose.Types.ObjectId(
-      data.issuedBy
-    ),
+        issuedBy: new mongoose.Types.ObjectId(
+          data.issuedBy
+        ),
 
-    issuedAt:
-      data.issuedAt ?? new Date(),
+        issuedAt:
+          data.issuedAt ?? new Date(),
 
-    dueAt: data.dueAt,
+        dueAt: data.dueAt,
 
-    returnedAt:
-      data.returnedAt,
+        returnedAt:
+          data.returnedAt,
 
-    returnedBy:
-      data.returnedBy
-        ? new mongoose.Types.ObjectId(
-            data.returnedBy
-          )
-        : undefined,
+        returnedBy:
+          data.returnedBy
+            ? new mongoose.Types.ObjectId(
+                data.returnedBy
+              )
+            : undefined,
 
-    status:
-      data.status ?? "ISSUED",
+        status:
+          data.status ?? "ISSUED",
 
-    renewalCount:
-      data.renewalCount ?? 0,
+        renewalCount:
+          data.renewalCount ?? 0,
 
-    notes: data.notes,
-  });
+        notes: data.notes,
+      },
+    ],
+    { session }
+  );
 
-  return issue;
+  return issues[0];
 };
 
 
 /**
  * Get all issues
  */
-export const getIssues = async (): Promise<
-  IIssue[]
-> => {
-  return Issue.find()
+export const getIssues = async (
+  query: PaginationQuery
+): Promise<PaginatedResult<IIssue>> => {
+  const filters: Record<string, unknown> = {};
+
+  if (query.search) {
+    filters.notes = new RegExp(escapeRegex(query.search), "i");
+  }
+  if (query.status) filters.status = query.status;
+  if (query.bookId) filters.bookId = new mongoose.Types.ObjectId(query.bookId);
+  if (query.memberId) filters.memberId = new mongoose.Types.ObjectId(query.memberId);
+  if (query.dateFrom || query.dateTo) {
+    filters.issuedAt = {
+      ...(query.dateFrom ? { $gte: new Date(query.dateFrom) } : {}),
+      ...(query.dateTo ? { $lte: new Date(query.dateTo) } : {}),
+    };
+  }
+
+  const { skip, limit, sort } = getPaginationOptions(query);
+  const [items, total] = await Promise.all([
+    Issue.find(filters)
     .populate(
       "bookId",
       "isbn title authors publisher category"
@@ -111,9 +140,17 @@ export const getIssues = async (): Promise<
       "returnedBy",
       "name email role"
     )
-    .sort({
-      createdAt: -1,
-    });
+    .sort(sort)
+    .skip(skip)
+    .limit(limit)
+    .exec(),
+    Issue.countDocuments(filters).exec(),
+  ]);
+
+  return {
+    items,
+    pagination: createPaginationMetadata(query, total),
+  };
 };
 
 
@@ -121,7 +158,8 @@ export const getIssues = async (): Promise<
  * Get issue by ID
  */
 export const getIssueById = async (
-  id: string
+  id: string,
+  session?: mongoose.ClientSession
 ): Promise<IIssue | null> => {
   if (
     !mongoose.Types.ObjectId.isValid(id)
@@ -149,7 +187,8 @@ export const getIssueById = async (
     .populate(
       "returnedBy",
       "name email role"
-    );
+    )
+    .session(session || null);
 };
 
 
@@ -158,7 +197,8 @@ export const getIssueById = async (
  */
 export const getActiveIssueByCopyId =
   async (
-    bookCopyId: string
+    bookCopyId: string,
+    session?: mongoose.ClientSession
   ): Promise<IIssue | null> => {
     if (
       !mongoose.Types.ObjectId.isValid(
@@ -175,7 +215,7 @@ export const getActiveIssueByCopyId =
         ),
 
       status: "ISSUED",
-    });
+    }).session(session || null);
   };
 
 
@@ -264,7 +304,9 @@ export const getIssuesByMemberId =
  */
 export const updateIssue = async (
   id: string,
-  data: UpdateIssueData
+  data: UpdateIssueData,
+  session?: mongoose.ClientSession,
+  expectedStatus?: IssueStatus
 ): Promise<IIssue | null> => {
   if (
     !mongoose.Types.ObjectId.isValid(id)
@@ -314,17 +356,87 @@ export const updateIssue = async (
     updateData.notes = data.notes;
   }
 
-  return Issue.findByIdAndUpdate(
-    id,
+  return Issue.findOneAndUpdate(
+    {
+      _id: id,
+      ...(expectedStatus ? { status: expectedStatus } : {}),
+    },
     updateData,
     {
-      new: true,
+      returnDocument: "after",
       runValidators: true,
+      session,
     }
   )
     .populate(
       "bookId",
       "isbn title authors"
+    )
+    .populate(
+      "bookCopyId",
+      "accessionNumber barcode location status condition"
+    )
+    .populate(
+      "memberId",
+      "memberId name email phone department course year membershipType status"
+    )
+    .populate(
+      "issuedBy",
+      "name email role"
+    )
+    .populate(
+      "returnedBy",
+      "name email role"
+    );
+};
+
+
+/**
+ * Renew issue atomically
+ *
+ * Updates the issue only when:
+ * - issue ID matches
+ * - status is still ISSUED
+ * - renewalCount is below the maximum
+ */
+export const renewIssue = async (
+  id: string,
+  newDueAt: Date,
+  maxRenewals: number,
+  session?: mongoose.ClientSession
+): Promise<IIssue | null> => {
+  if (
+    !mongoose.Types.ObjectId.isValid(id)
+  ) {
+    return null;
+  }
+
+  return Issue.findOneAndUpdate(
+    {
+      _id: id,
+      status: "ISSUED",
+      renewalCount: {
+        $lt: maxRenewals,
+      },
+    },
+    {
+      $set: {
+        dueAt: newDueAt,
+        status: "ISSUED",
+      },
+      $inc: {
+        renewalCount: 1,
+      },
+    },
+    {
+      returnDocument: "after",
+      runValidators: true,
+      session,
+    }
+  )
+    .populate(
+      "bookId",
+      "isbn title authors publisher category"
     )
     .populate(
       "bookCopyId",

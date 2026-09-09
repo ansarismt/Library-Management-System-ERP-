@@ -71,6 +71,8 @@ Never commit real secrets or database credentials to source control.
 - CORS is configured through the CLIENT_URL environment variable.
 - Cookies are set with HttpOnly and secure settings in production.
 - Deployment URLs must be placed in environment variables, not hardcoded into code.
+- `TRUST_PROXY_HOPS` defaults to `0`, so direct deployments ignore client-supplied forwarding headers. Set it only to the exact number of trusted reverse-proxy hops used by the deployment.
+- Rate limits use the default in-memory store: counters are per application instance and reset when it restarts. Configure the `*_RATE_LIMIT_WINDOW_MS` and `*_RATE_LIMIT_MAX` values in `server/.env` for the deployment's expected traffic.
 
 ## Security Guidelines
 

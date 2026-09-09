@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { randomUUID } from "crypto";
 
 interface AccessTokenPayload {
   userId: string;
@@ -41,6 +42,7 @@ export const generateRefreshToken = (
     getRefreshSecret(),
     {
       expiresIn: "7d",
+      jwtid: randomUUID(),
     }
   );
 };

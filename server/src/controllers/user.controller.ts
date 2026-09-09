@@ -8,6 +8,8 @@ import {
   updateUser,
 } from "../services/user.service.js";
 import { Role } from "../constants/roles.js";
+import { AUDIT_ACTIONS } from "../constants/auditActions.js";
+import { auditRequest } from "../services/audit.service.js";
 
 const getIdParam = (req: Request): string => {
   const id = req.params.id;
@@ -20,15 +22,16 @@ const getIdParam = (req: Request): string => {
 };
 
 export const getUsersController = async (
-  _req: Request,
+  req: Request,
   res: Response
 ) => {
   try {
-    const users = await getUsers();
+    const users = await getUsers(req.query as never);
 
     return res.status(200).json({
       success: true,
-      data: users,
+      data: users.items,
+      pagination: users.pagination,
     });
   } catch {
     return res.status(500).json({
@@ -93,6 +96,22 @@ export const createUserController = async (
       department,
     });
 
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.USER_CREATED,
+      resourceType: "USER",
+      resourceId: user.id,
+      description: "User created",
+      after: {
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        memberId: user.memberId,
+      },
+      success: true,
+      statusCode: 201,
+    });
+
     return res.status(201).json({
       success: true,
       message: "User created successfully",
@@ -114,10 +133,61 @@ export const updateUserController = async (
   res: Response
 ) => {
   try {
+    const {
+      name,
+      email,
+      status,
+      memberId,
+      department,
+    } = req.body;
+
+    const beforeUser = await getUserById(getIdParam(req));
     const user = await updateUser(
       getIdParam(req),
-      req.body
+      {
+        name,
+        email,
+        status,
+        memberId,
+        department,
+      }
     );
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.USER_UPDATED,
+      resourceType: "USER",
+      resourceId: getIdParam(req),
+      description: "User updated",
+      before: {
+        name: beforeUser.name,
+        email: beforeUser.email,
+        role: beforeUser.role,
+        status: beforeUser.status,
+        memberId: beforeUser.memberId,
+      },
+      after: {
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        memberId: user.memberId,
+      },
+      success: true,
+      statusCode: 200,
+    });
+
+    if (beforeUser.status !== user.status) {
+      await auditRequest(req, {
+        action: AUDIT_ACTIONS.USER_STATUS_CHANGED,
+        resourceType: "USER",
+        resourceId: getIdParam(req),
+        description: "User status changed",
+        before: { status: beforeUser.status },
+        after: { status: user.status },
+        success: true,
+        statusCode: 200,
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -140,7 +210,24 @@ export const deleteUserController = async (
   res: Response
 ) => {
   try {
+    const beforeUser = await getUserById(getIdParam(req));
     const result = await deleteUser(getIdParam(req));
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.USER_DELETED,
+      resourceType: "USER",
+      resourceId: getIdParam(req),
+      description: "User deleted",
+      before: {
+        name: beforeUser.name,
+        email: beforeUser.email,
+        role: beforeUser.role,
+        status: beforeUser.status,
+        memberId: beforeUser.memberId,
+      },
+      success: true,
+      statusCode: 200,
+    });
 
     return res.status(200).json({
       success: true,
@@ -171,10 +258,22 @@ export const changeUserRoleController = async (
       });
     }
 
+    const beforeUser = await getUserById(getIdParam(req));
     const user = await changeUserRole(
       getIdParam(req),
       role as Role
     );
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.USER_ROLE_CHANGED,
+      resourceType: "USER",
+      resourceId: getIdParam(req),
+      description: "User role changed",
+      before: { role: beforeUser.role },
+      after: { role: user.role },
+      success: true,
+      statusCode: 200,
+    });
 
     return res.status(200).json({
       success: true,

@@ -1,4 +1,4 @@
-import { Request, Response } from "express";
+import { NextFunction, Request, Response } from "express";
 import {
   createBook,
   getBookById,
@@ -7,13 +7,31 @@ import {
   updateBook,
   deleteBook,
 } from "../services/book.service.js";
+import { AUDIT_ACTIONS } from "../constants/auditActions.js";
+import { auditRequest } from "../services/audit.service.js";
 
 export const createBookController = async (
   req: Request,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> => {
   try {
     const book = await createBook(req.body);
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.BOOK_CREATED,
+      resourceType: "BOOK",
+      resourceId: book._id.toString(),
+      description: "Book created",
+      after: {
+        isbn: book.isbn,
+        title: book.title,
+        category: book.category,
+        status: book.status,
+      },
+      success: true,
+      statusCode: 201,
+    });
 
     res.status(201).json({
       success: true,
@@ -21,25 +39,21 @@ export const createBookController = async (
       data: book,
     });
   } catch (error) {
-    console.error("Create book error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to create book",
-    });
+    next(error);
   }
 };
 
 export const getBooksController = async (
-  _req: Request,
+  req: Request,
   res: Response
 ): Promise<void> => {
   try {
-    const books = await getBooks();
+    const books = await getBooks(req.query as never);
 
     res.status(200).json({
       success: true,
-      data: books,
+      data: books.items,
+      pagination: books.pagination,
     });
   } catch (error) {
     console.error("Get books error:", error);
@@ -144,6 +158,7 @@ export const updateBookController = async (
       return;
     }
 
+    const beforeBook = await getBookById(id);
     const book = await updateBook(id, req.body);
 
     if (!book) {
@@ -153,6 +168,27 @@ export const updateBookController = async (
       });
       return;
     }
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.BOOK_UPDATED,
+      resourceType: "BOOK",
+      resourceId: id,
+      description: "Book updated",
+      before: beforeBook ? {
+        isbn: beforeBook.isbn,
+        title: beforeBook.title,
+        category: beforeBook.category,
+        status: beforeBook.status,
+      } : undefined,
+      after: {
+        isbn: book.isbn,
+        title: book.title,
+        category: book.category,
+        status: book.status,
+      },
+      success: true,
+      statusCode: 200,
+    });
 
     res.status(200).json({
       success: true,
@@ -193,6 +229,21 @@ export const deleteBookController = async (
       });
       return;
     }
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.BOOK_DELETED,
+      resourceType: "BOOK",
+      resourceId: id,
+      description: "Book deleted",
+      before: {
+        isbn: book.isbn,
+        title: book.title,
+        category: book.category,
+        status: book.status,
+      },
+      success: true,
+      statusCode: 200,
+    });
 
     res.status(200).json({
       success: true,

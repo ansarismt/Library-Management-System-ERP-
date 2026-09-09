@@ -3,6 +3,21 @@ import { Router } from "express";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizePermission } from "../middleware/authorization.middleware.js";
 import { PERMISSIONS } from "../constants/permissions.js";
+import {
+  validateBody,
+  validateParams,
+  validateQuery,
+} from "../middleware/validation.middleware.js";
+import {
+  createIssueBodySchema,
+  issueIdParamsSchema,
+  issueMemberParamsSchema,
+  renewIssueBodySchema,
+  returnIssueBodySchema,
+  updateIssueBodySchema,
+} from "../validators/issue.validator.js";
+import { issuesQuerySchema } from "../validators/list.validator.js";
+import { sensitiveMutationLimiter } from "../middleware/rate-limit.middleware.js";
 
 import {
   issueBookController,
@@ -27,6 +42,7 @@ router.get(
   authorizePermission(
     PERMISSIONS.BOOK_ISSUE
   ),
+  validateQuery(issuesQuerySchema),
   listIssuesController
 );
 
@@ -43,6 +59,7 @@ router.get(
   authorizePermission(
     PERMISSIONS.BOOK_ISSUE
   ),
+  validateParams(issueMemberParamsSchema),
   getMemberIssuesController
 );
 
@@ -56,6 +73,7 @@ router.get(
   authorizePermission(
     PERMISSIONS.BOOK_ISSUE
   ),
+  validateParams(issueIdParamsSchema),
   getIssueController
 );
 
@@ -66,9 +84,11 @@ router.get(
 router.post(
   "/",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(
     PERMISSIONS.BOOK_ISSUE
   ),
+  validateBody(createIssueBodySchema),
   issueBookController
 );
 
@@ -79,9 +99,12 @@ router.post(
 router.post(
   "/:id/return",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(
     PERMISSIONS.BOOK_RETURN
   ),
+  validateParams(issueIdParamsSchema),
+  validateBody(returnIssueBodySchema),
   returnBookController
 );
 
@@ -92,9 +115,12 @@ router.post(
 router.post(
   "/:id/renew",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(
     PERMISSIONS.BOOK_RENEW
   ),
+  validateParams(issueIdParamsSchema),
+  validateBody(renewIssueBodySchema),
   renewBookController
 );
 
@@ -105,9 +131,12 @@ router.post(
 router.patch(
   "/:id",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(
     PERMISSIONS.BOOK_ISSUE
   ),
+  validateParams(issueIdParamsSchema),
+  validateBody(updateIssueBodySchema),
   updateIssueController
 );
 
@@ -118,9 +147,11 @@ router.patch(
 router.delete(
   "/:id",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(
     PERMISSIONS.BOOK_ISSUE
   ),
+  validateParams(issueIdParamsSchema),
   deleteIssueController
 );
 

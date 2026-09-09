@@ -31,8 +31,10 @@ export const createMemberService = async (
   return createMember(data);
 };
 
-export const listMembersService = async () => {
-  return getMembers();
+export const listMembersService = async (
+  query: import("../types/pagination.js").PaginationQuery
+) => {
+  return getMembers(query);
 };
 
 export const getMemberService = async (
