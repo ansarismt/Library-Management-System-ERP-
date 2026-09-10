@@ -115,3 +115,5 @@ export const Issue = mongoose.model<IIssue>(
   "Issue",
   issueSchema
 );
+
+issueSchema.index({ status: 1, issuedAt: -1 });

@@ -1,6 +1,12 @@
 import { NextFunction, Request, Response } from "express";
 import { verifyAccessToken } from "../utils/jwt.js";
 import { Role } from "../constants/roles.js";
+import { AppError } from "./error.middleware.js";
+import { AUDIT_ACTIONS } from "../constants/auditActions.js";
+import {
+  createAuditLog,
+  getAuditRequestContext,
+} from "../services/audit.service.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -9,39 +15,47 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
+const auditAuthenticationFailure = (
+  req: AuthenticatedRequest,
+  description: string
+): void => {
+  void createAuditLog({
+    ...getAuditRequestContext(req),
+    action: AUDIT_ACTIONS.AUTH_ACCESS_DENIED,
+    resourceType: "AUTH",
+    description,
+    success: false,
+    statusCode: 401,
+  });
+};
+
 export const authenticate = (
   req: AuthenticatedRequest,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ): void => {
   try {
     const authorization = req.headers.authorization;
 
     if (!authorization?.startsWith("Bearer ")) {
-      res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
+      auditAuthenticationFailure(req, "Authentication header missing");
+      next(new AppError(401, "Authentication required"));
       return;
     }
 
     const token = authorization.substring(7).trim();
 
     if (!token) {
-      res.status(401).json({
-        success: false,
-        message: "Access token is missing",
-      });
+      auditAuthenticationFailure(req, "Access token missing");
+      next(new AppError(401, "Access token is missing"));
       return;
     }
 
     const payload = verifyAccessToken(token);
 
     if (!payload.userId || !payload.role) {
-      res.status(401).json({
-        success: false,
-        message: "Invalid access token",
-      });
+      auditAuthenticationFailure(req, "Access token payload invalid");
+      next(new AppError(401, "Invalid access token"));
       return;
     }
 
@@ -54,9 +68,7 @@ export const authenticate = (
   } catch (error) {
     console.error("JWT authentication error:", error);
 
-    res.status(401).json({
-      success: false,
-      message: "Invalid or expired access token",
-    });
+    auditAuthenticationFailure(req, "Access token rejected");
+    next(new AppError(401, "Invalid or expired access token"));
   }
 };

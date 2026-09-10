@@ -53,12 +53,15 @@ export const createBookCopyService = async (data: {
   return copy;
 };
 
-export const listBookCopiesService = async () => {
-  return getBookCopies();
+export const listBookCopiesService = async (
+  query: import("../types/pagination.js").PaginationQuery
+) => {
+  return getBookCopies(query);
 };
 
 export const listBookCopiesByBookService = async (
-  bookId: string
+  bookId: string,
+  query: import("../types/pagination.js").PaginationQuery
 ) => {
   if (!mongoose.Types.ObjectId.isValid(bookId)) {
     throw new Error("Invalid book ID");
@@ -70,7 +73,7 @@ export const listBookCopiesByBookService = async (
     throw new Error("Book not found");
   }
 
-  return getBookCopiesByBookId(bookId);
+  return getBookCopiesByBookId(bookId, query);
 };
 
 export const getBookCopyService = async (

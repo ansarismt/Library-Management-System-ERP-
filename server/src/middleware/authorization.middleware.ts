@@ -3,26 +3,41 @@ import { AuthenticatedRequest } from "./auth.middleware.js";
 import { Role } from "../constants/roles.js";
 import { Permission } from "../constants/permissions.js";
 import { ROLE_PERMISSIONS } from "../constants/rolePermissions.js";
+import { AppError } from "./error.middleware.js";
+import { AUDIT_ACTIONS } from "../constants/auditActions.js";
+import {
+  createAuditLog,
+  getAuditRequestContext,
+} from "../services/audit.service.js";
+
+const auditAccessDenied = (
+  req: AuthenticatedRequest,
+  description: string
+): void => {
+  void createAuditLog({
+    ...getAuditRequestContext(req),
+    action: AUDIT_ACTIONS.AUTH_ACCESS_DENIED,
+    resourceType: "AUTH",
+    description,
+    success: false,
+    statusCode: 403,
+  });
+};
 
 export const authorizeRoles = (...allowedRoles: Role[]) => {
   return (
     req: AuthenticatedRequest,
-    res: Response,
+    _res: Response,
     next: NextFunction
   ): void => {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
+      next(new AppError(401, "Authentication required"));
       return;
     }
 
     if (!allowedRoles.includes(req.user.role as Role)) {
-      res.status(403).json({
-        success: false,
-        message: "You do not have permission to access this resource",
-      });
+      auditAccessDenied(req, "Role authorization denied");
+      next(new AppError(403, "You do not have permission to access this resource"));
       return;
     }
 
@@ -35,14 +50,11 @@ export const authorizePermission = (
 ) => {
   return (
     req: AuthenticatedRequest,
-    res: Response,
+    _res: Response,
     next: NextFunction
   ): void => {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
+      next(new AppError(401, "Authentication required"));
       return;
     }
 
@@ -51,11 +63,10 @@ export const authorizePermission = (
     const permissions = ROLE_PERMISSIONS[role] ?? [];
 
     if (!permissions.includes(permission)) {
-      res.status(403).json({
-        success: false,
-        message: "Insufficient permissions",
+      auditAccessDenied(req, `Permission denied: ${permission}`);
+      next(new AppError(403, "Insufficient permissions", {
         requiredPermission: permission,
-      });
+      }));
       return;
     }
 
@@ -68,14 +79,11 @@ export const authorizeAnyPermission = (
 ) => {
   return (
     req: AuthenticatedRequest,
-    res: Response,
+    _res: Response,
     next: NextFunction
   ): void => {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
+      next(new AppError(401, "Authentication required"));
       return;
     }
 
@@ -90,10 +98,8 @@ export const authorizeAnyPermission = (
     );
 
     if (!hasPermission) {
-      res.status(403).json({
-        success: false,
-        message: "Insufficient permissions",
-      });
+      auditAccessDenied(req, "Permission authorization denied");
+      next(new AppError(403, "Insufficient permissions"));
       return;
     }
 

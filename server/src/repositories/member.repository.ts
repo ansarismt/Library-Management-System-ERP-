@@ -1,4 +1,7 @@
 import { Member, IMember } from "../models/Member.js";
+import { PaginatedResult, PaginationQuery } from "../types/pagination.js";
+import { createPaginationMetadata, getPaginationOptions } from "../utils/pagination.js";
+import { escapeRegex } from "../utils/search.js";
 
 export interface CreateMemberData {
   memberId: string;
@@ -28,10 +31,39 @@ export const createMember = async (
   return Member.create(data);
 };
 
-export const getMembers = async (): Promise<IMember[]> => {
-  return Member.find()
-    .sort({ createdAt: -1 })
-    .exec();
+export const getMembers = async (
+  query: PaginationQuery
+): Promise<PaginatedResult<IMember>> => {
+  const filters: Record<string, unknown> = {};
+
+  if (query.search) {
+    const search = new RegExp(escapeRegex(query.search), "i");
+    filters.$or = [
+      { name: search },
+      { memberId: search },
+      { email: search },
+      { phone: search },
+    ];
+  }
+  if (query.status) filters.status = query.status;
+  if (query.membershipType) filters.membershipType = query.membershipType;
+  if (query.dateFrom || query.dateTo) {
+    filters.createdAt = {
+      ...(query.dateFrom ? { $gte: new Date(query.dateFrom) } : {}),
+      ...(query.dateTo ? { $lte: new Date(query.dateTo) } : {}),
+    };
+  }
+
+  const { skip, limit, sort } = getPaginationOptions(query);
+  const [items, total] = await Promise.all([
+    Member.find(filters).sort(sort).skip(skip).limit(limit).exec(),
+    Member.countDocuments(filters).exec(),
+  ]);
+
+  return {
+    items,
+    pagination: createPaginationMetadata(query, total),
+  };
 };
 
 export const getMemberById = async (
@@ -62,7 +94,7 @@ export const updateMember = async (
     id,
     data,
     {
-      new: true,
+      returnDocument: "after",
       runValidators: true,
     }
   );

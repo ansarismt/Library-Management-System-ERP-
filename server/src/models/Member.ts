@@ -118,3 +118,5 @@ export const Member = mongoose.model<IMember>(
   "Member",
   memberSchema
 );
+
+memberSchema.index({ status: 1, membershipType: 1, createdAt: -1 });

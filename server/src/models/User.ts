@@ -74,4 +74,6 @@ const userSchema = new Schema<IUser>(
   }
 );
 
+userSchema.index({ status: 1, createdAt: -1 });
+
 export const User = mongoose.model<IUser>("User", userSchema);

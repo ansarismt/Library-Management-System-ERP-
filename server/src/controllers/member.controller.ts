@@ -1,4 +1,4 @@
-import { Request, Response } from "express";
+import { NextFunction, Request, Response } from "express";
 
 import {
   createMemberService,
@@ -7,13 +7,32 @@ import {
   updateMemberService,
   deleteMemberService,
 } from "../services/member.service.js";
+import { AUDIT_ACTIONS } from "../constants/auditActions.js";
+import { auditRequest } from "../services/audit.service.js";
 
 export const createMemberController = async (
   req: Request,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> => {
   try {
     const member = await createMemberService(req.body);
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.MEMBER_CREATED,
+      resourceType: "MEMBER",
+      resourceId: member._id.toString(),
+      description: "Member created",
+      after: {
+        memberId: member.memberId,
+        name: member.name,
+        email: member.email,
+        membershipType: member.membershipType,
+        status: member.status,
+      },
+      success: true,
+      statusCode: 201,
+    });
 
     res.status(201).json({
       success: true,
@@ -21,28 +40,21 @@ export const createMemberController = async (
       data: member,
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Failed to create member";
-
-    res.status(400).json({
-      success: false,
-      message,
-    });
+    next(error);
   }
 };
 
 export const listMembersController = async (
-  _req: Request,
+  req: Request,
   res: Response
 ): Promise<void> => {
   try {
-    const members = await listMembersService();
+    const members = await listMembersService(req.query as never);
 
     res.status(200).json({
       success: true,
-      data: members,
+      data: members.items,
+      pagination: members.pagination,
     });
   } catch (error) {
     const message =
@@ -106,10 +118,34 @@ export const updateMemberController = async (
       return;
     }
 
+    const beforeMember = await getMemberService(id);
     const member = await updateMemberService(
       id,
       req.body
     );
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.MEMBER_UPDATED,
+      resourceType: "MEMBER",
+      resourceId: id,
+      description: "Member updated",
+      before: {
+        memberId: beforeMember.memberId,
+        name: beforeMember.name,
+        email: beforeMember.email,
+        membershipType: beforeMember.membershipType,
+        status: beforeMember.status,
+      },
+      after: member ? {
+        memberId: member.memberId,
+        name: member.name,
+        email: member.email,
+        membershipType: member.membershipType,
+        status: member.status,
+      } : undefined,
+      success: true,
+      statusCode: 200,
+    });
 
     res.status(200).json({
       success: true,
@@ -144,7 +180,24 @@ export const deleteMemberController = async (
       return;
     }
 
+    const member = await getMemberService(id);
     await deleteMemberService(id);
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.MEMBER_DELETED,
+      resourceType: "MEMBER",
+      resourceId: id,
+      description: "Member deleted",
+      before: {
+        memberId: member.memberId,
+        name: member.name,
+        email: member.email,
+        membershipType: member.membershipType,
+        status: member.status,
+      },
+      success: true,
+      statusCode: 200,
+    });
 
     res.status(200).json({
       success: true,

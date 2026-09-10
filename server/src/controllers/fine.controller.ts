@@ -12,6 +12,8 @@ import {
   waiveFineService,
   deleteFineService,
 } from "../services/fine.service.js";
+import { AUDIT_ACTIONS } from "../constants/auditActions.js";
+import { auditRequest } from "../services/audit.service.js";
 
 
 /* =========================================================
@@ -20,16 +22,17 @@ import {
 
 export const listFinesController =
   async (
-    _req: Request,
+    req: Request,
     res: Response
   ): Promise<void> => {
     try {
       const fines =
-        await listFinesService();
+        await listFinesService(req.query as never);
 
       res.status(200).json({
         success: true,
-        data: fines,
+        data: fines.items,
+        pagination: fines.pagination,
       });
     } catch (error) {
       res.status(500).json({
@@ -147,6 +150,22 @@ if (typeof issueId !== "string") {
           issueId
         );
 
+      if (fine) {
+        await auditRequest(req, {
+          action: AUDIT_ACTIONS.FINE_CREATED,
+          resourceType: "FINE",
+          resourceId: fine._id.toString(),
+          description: "Fine calculated",
+          after: {
+            amount: fine.amount,
+            daysOverdue: fine.daysOverdue,
+            status: fine.status,
+          },
+          success: true,
+          statusCode: 201,
+        });
+      }
+
       res.status(201).json({
         success: true,
         message:
@@ -235,6 +254,22 @@ if (!id) {
           }
         );
 
+      await auditRequest(req, {
+        action: AUDIT_ACTIONS.FINE_PAID,
+        resourceType: "FINE",
+        resourceId: id,
+        description: "Fine payment recorded",
+        after: fine ? {
+          amount: fine.amount,
+          paidAmount: fine.paidAmount,
+          status: fine.status,
+          paymentMethod: fine.paymentMethod,
+          paidAt: fine.paidAt,
+        } : undefined,
+        success: true,
+        statusCode: 200,
+      });
+
       res.status(200).json({
         success: true,
         message:
@@ -308,6 +343,21 @@ if (!id) {
           }
         );
 
+      await auditRequest(req, {
+        action: AUDIT_ACTIONS.FINE_WAIVED,
+        resourceType: "FINE",
+        resourceId: id,
+        description: "Fine waived",
+        after: fine ? {
+          amount: fine.amount,
+          status: fine.status,
+          waivedAt: fine.waivedAt,
+          waiverReason: fine.waiverReason,
+        } : undefined,
+        success: true,
+        statusCode: 200,
+      });
+
       res.status(200).json({
         success: true,
         message:
@@ -351,6 +401,20 @@ if (!id) {
 
       const fine =
         await deleteFineService(id);
+
+      await auditRequest(req, {
+        action: AUDIT_ACTIONS.FINE_DELETED,
+        resourceType: "FINE",
+        resourceId: id,
+        description: "Fine deleted",
+        before: fine ? {
+          amount: fine.amount,
+          paidAmount: fine.paidAmount,
+          status: fine.status,
+        } : undefined,
+        success: true,
+        statusCode: 200,
+      });
 
       res.status(200).json({
         success: true,

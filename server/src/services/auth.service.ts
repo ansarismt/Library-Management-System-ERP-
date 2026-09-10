@@ -60,30 +60,16 @@ export const login = async (
   email: string,
   password: string
 ) => {
- const user = await findUserByEmail(email);
+  const user = await findUserByEmail(email);
 
-console.log("LOGIN DEBUG:", {
-  email,
-  userFound: !!user,
-  userId: user?._id?.toString(),
-  userEmail: user?.email,
-  userStatus: user?.status,
-  userRole: user?.role,
-});
+  if (!user) {
+    throw new Error("Invalid email or password");
+  }
 
-if (!user) {
-  throw new Error("Invalid email or password");
-}
-
- const validPassword = await comparePassword(
-  password,
-  user.passwordHash
-);
-
-console.log("PASSWORD DEBUG:", {
-  validPassword,
-  hasPasswordHash: !!user.passwordHash,
-});
+  const validPassword = await comparePassword(
+    password,
+    user.passwordHash
+  );
 
   if (!validPassword) {
     throw new Error("Invalid email or password");

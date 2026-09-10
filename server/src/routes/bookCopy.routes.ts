@@ -3,6 +3,19 @@ import { Router } from "express";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizePermission } from "../middleware/authorization.middleware.js";
 import { PERMISSIONS } from "../constants/permissions.js";
+import {
+  validateBody,
+  validateParams,
+  validateQuery,
+} from "../middleware/validation.middleware.js";
+import {
+  bookCopyBookParamsSchema,
+  bookCopyIdParamsSchema,
+  createBookCopyBodySchema,
+  updateBookCopyBodySchema,
+} from "../validators/bookCopy.validator.js";
+import { bookCopiesQuerySchema } from "../validators/list.validator.js";
+import { sensitiveMutationLimiter } from "../middleware/rate-limit.middleware.js";
 
 import {
   createBookCopyController,
@@ -22,6 +35,7 @@ router.get(
   "/",
   authenticate,
   authorizePermission(PERMISSIONS.BOOK_COPY_READ),
+  validateQuery(bookCopiesQuerySchema),
   listBookCopiesController
 );
 
@@ -32,6 +46,8 @@ router.get(
   "/book/:bookId",
   authenticate,
   authorizePermission(PERMISSIONS.BOOK_COPY_READ),
+  validateParams(bookCopyBookParamsSchema),
+  validateQuery(bookCopiesQuerySchema),
   listBookCopiesByBookController
 );
 
@@ -42,6 +58,7 @@ router.get(
   "/:id",
   authenticate,
   authorizePermission(PERMISSIONS.BOOK_COPY_READ),
+  validateParams(bookCopyIdParamsSchema),
   getBookCopyController
 );
 
@@ -51,7 +68,9 @@ router.get(
 router.post(
   "/",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(PERMISSIONS.BOOK_COPY_CREATE),
+  validateBody(createBookCopyBodySchema),
   createBookCopyController
 );
 
@@ -61,7 +80,10 @@ router.post(
 router.patch(
   "/:id",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(PERMISSIONS.BOOK_COPY_UPDATE),
+  validateParams(bookCopyIdParamsSchema),
+  validateBody(updateBookCopyBodySchema),
   updateBookCopyController
 );
 
@@ -71,7 +93,9 @@ router.patch(
 router.delete(
   "/:id",
   authenticate,
+  sensitiveMutationLimiter,
   authorizePermission(PERMISSIONS.BOOK_COPY_DELETE),
+  validateParams(bookCopyIdParamsSchema),
   deleteBookCopyController
 );
 

@@ -7,15 +7,18 @@ import {
   refreshAccessToken,
   register,
 } from "../services/auth.service.js";
+import { AUDIT_ACTIONS } from "../constants/auditActions.js";
+import { auditRequest } from "../services/audit.service.js";
 
 const isProduction = process.env.NODE_ENV === "production";
+const sameSite: "lax" | "none" = isProduction ? "none" : "lax";
 
 const refreshCookieOptions = {
   httpOnly: true,
   secure: isProduction,
-  sameSite: (isProduction ? "none" : "lax") as const,
+  sameSite,
   maxAge: 7 * 24 * 60 * 60 * 1000,
-};
+} as const;
 
 export const registerController = async (
   req: Request,
@@ -44,12 +47,31 @@ export const registerController = async (
       password,
     });
 
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.AUTH_REGISTER,
+      resourceType: "AUTH",
+      resourceId: user.id,
+      description: "User registration succeeded",
+      after: { userId: user.id, role: user.role },
+      success: true,
+      statusCode: 201,
+    });
+
     return res.status(201).json({
       success: true,
       message: "User registered successfully",
       data: user,
     });
   } catch (error) {
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.AUTH_REGISTER,
+      resourceType: "AUTH",
+      description: "User registration failed",
+      metadata: { email: String(req.body.email ?? "").toLowerCase() },
+      success: false,
+      statusCode: 400,
+    });
+
     return res.status(400).json({
       success: false,
       message:
@@ -76,6 +98,18 @@ export const loginController = async (
 
     const result = await login(email, password);
 
+    await auditRequest(req, {
+      actorUserId: result.user.id,
+      actorRole: result.user.role,
+      action: AUDIT_ACTIONS.AUTH_LOGIN,
+      resourceType: "AUTH",
+      resourceId: result.user.id,
+      description: "User login succeeded",
+      after: { userId: result.user.id, role: result.user.role },
+      success: true,
+      statusCode: 200,
+    });
+
     res.cookie(
       "refreshToken",
       result.refreshToken,
@@ -91,6 +125,15 @@ export const loginController = async (
       },
     });
   } catch (error) {
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.AUTH_LOGIN_FAILED,
+      resourceType: "AUTH",
+      description: "User login failed",
+      metadata: { email: String(req.body.email ?? "").toLowerCase() },
+      success: false,
+      statusCode: 401,
+    });
+
     return res.status(401).json({
       success: false,
       message:
@@ -117,6 +160,14 @@ export const refreshController = async (
 
     const result = await refreshAccessToken(refreshToken);
 
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.AUTH_REFRESH,
+      resourceType: "AUTH",
+      description: "Refresh token rotation succeeded",
+      success: true,
+      statusCode: 200,
+    });
+
     res.cookie(
       "refreshToken",
       result.refreshToken,
@@ -130,6 +181,13 @@ export const refreshController = async (
       },
     });
   } catch {
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.AUTH_REFRESH,
+      resourceType: "AUTH",
+      description: "Refresh token rotation failed",
+      success: false,
+      statusCode: 401,
+    });
     res.clearCookie("refreshToken");
 
     return res.status(401).json({
@@ -149,6 +207,14 @@ export const logoutController = async (
     if (refreshToken) {
       await logout(refreshToken);
     }
+
+    await auditRequest(req, {
+      action: AUDIT_ACTIONS.AUTH_LOGOUT,
+      resourceType: "AUTH",
+      description: "User logout succeeded",
+      success: true,
+      statusCode: 200,
+    });
 
     res.clearCookie("refreshToken");
 

@@ -94,3 +94,6 @@ export const BookCopy = mongoose.model<IBookCopy>(
   "BookCopy",
   bookCopySchema
 );
+
+bookCopySchema.index({ bookId: 1, status: 1, createdAt: -1 });
+bookCopySchema.index({ status: 1, condition: 1, createdAt: -1 });

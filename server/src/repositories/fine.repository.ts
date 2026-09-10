@@ -4,6 +4,8 @@ import {
   IFine,
   FineStatus,
 } from "../models/Fine.js";
+import { PaginatedResult, PaginationQuery } from "../types/pagination.js";
+import { createPaginationMetadata, getPaginationOptions } from "../utils/pagination.js";
 
 export interface CreateFineData {
   issueId: string;
@@ -53,54 +55,64 @@ export interface UpdateFineData {
 ========================================================= */
 
 export const createFine = async (
-  data: CreateFineData
+  data: CreateFineData,
+  session?: mongoose.ClientSession
 ): Promise<IFine> => {
-  return Fine.create({
-    issueId: new mongoose.Types.ObjectId(
-      data.issueId
-    ),
+  const fines = await Fine.create(
+    [
+      {
+        issueId: new mongoose.Types.ObjectId(
+          data.issueId
+        ),
 
-    memberId: new mongoose.Types.ObjectId(
-      data.memberId
-    ),
+        memberId: new mongoose.Types.ObjectId(
+          data.memberId
+        ),
 
-    bookId: new mongoose.Types.ObjectId(
-      data.bookId
-    ),
+        bookId: new mongoose.Types.ObjectId(
+          data.bookId
+        ),
 
-    amount: data.amount,
-    paidAmount: data.paidAmount ?? 0,
+        amount: data.amount,
+        paidAmount: data.paidAmount ?? 0,
 
-    daysOverdue: data.daysOverdue,
-    ratePerDay: data.ratePerDay,
+        daysOverdue: data.daysOverdue,
+        ratePerDay: data.ratePerDay,
 
-    status: data.status ?? "UNPAID",
+        status: data.status ?? "UNPAID",
 
-    paymentMethod:
-      data.paymentMethod,
+        paymentMethod:
+          data.paymentMethod,
 
-    paidAt:
-      data.paidAt,
+        paidAt:
+          data.paidAt,
 
-    paidBy:
-      data.paidBy
-        ? new mongoose.Types.ObjectId(data.paidBy)
-        : undefined,
+        paidBy:
+          data.paidBy
+            ? new mongoose.Types.ObjectId(data.paidBy)
+            : undefined,
 
-    waivedAt:
-      data.waivedAt,
+        waivedAt:
+          data.waivedAt,
 
-    waivedBy:
-      data.waivedBy
-        ? new mongoose.Types.ObjectId(data.waivedBy)
-        : undefined,
+        waivedBy:
+          data.waivedBy
+            ? new mongoose.Types.ObjectId(data.waivedBy)
+            : undefined,
 
-    waiverReason:
-      data.waiverReason,
+        waiverReason:
+          data.waiverReason,
 
-    notes:
-      data.notes,
-  });
+        notes:
+          data.notes,
+      },
+    ],
+    {
+      session,
+    }
+  );
+
+  return fines[0];
 };
 
 
@@ -108,17 +120,27 @@ export const createFine = async (
    LIST
 ========================================================= */
 
-export const getFines = async () => {
-  return Fine.find()
-    .populate(
-      "issueId"
-    )
-    .populate(
-      "memberId"
-    )
-    .populate(
-      "bookId"
-    )
+export const getFines = async (
+  query: PaginationQuery
+): Promise<PaginatedResult<IFine>> => {
+  const filters: Record<string, unknown> = {};
+
+  if (query.status) filters.status = query.status;
+  if (query.paymentMethod) filters.paymentMethod = query.paymentMethod;
+  if (query.memberId) filters.memberId = new mongoose.Types.ObjectId(query.memberId);
+  if (query.dateFrom || query.dateTo) {
+    filters.createdAt = {
+      ...(query.dateFrom ? { $gte: new Date(query.dateFrom) } : {}),
+      ...(query.dateTo ? { $lte: new Date(query.dateTo) } : {}),
+    };
+  }
+
+  const { skip, limit, sort } = getPaginationOptions(query);
+  const [items, total] = await Promise.all([
+    Fine.find(filters)
+    .populate("issueId")
+    .populate("memberId")
+    .populate("bookId")
     .populate(
       "paidBy",
       "name email role"
@@ -127,9 +149,17 @@ export const getFines = async () => {
       "waivedBy",
       "name email role"
     )
-    .sort({
-      createdAt: -1,
-    });
+    .sort(sort)
+    .skip(skip)
+    .limit(limit)
+    .exec(),
+    Fine.countDocuments(filters).exec(),
+  ]);
+
+  return {
+    items,
+    pagination: createPaginationMetadata(query, total),
+  };
 };
 
 
@@ -138,7 +168,8 @@ export const getFines = async () => {
 ========================================================= */
 
 export const getFineById = async (
-  id: string
+  id: string,
+  session?: mongoose.ClientSession
 ) => {
   if (
     !mongoose.Types.ObjectId.isValid(id)
@@ -157,7 +188,8 @@ export const getFineById = async (
     .populate(
       "waivedBy",
       "name email role"
-    );
+    )
+    .session(session || null);
 };
 
 
@@ -166,7 +198,8 @@ export const getFineById = async (
 ========================================================= */
 
 export const getFineByIssueId = async (
-  issueId: string
+  issueId: string,
+  session?: mongoose.ClientSession
 ) => {
   if (
     !mongoose.Types.ObjectId.isValid(
@@ -178,9 +211,8 @@ export const getFineByIssueId = async (
 
   return Fine.findOne({
     issueId,
-  });
+  }).session(session || null);
 };
-
 
 /* =========================================================
    MEMBER FINES
@@ -215,7 +247,9 @@ export const getFinesByMemberId =
 
 export const updateFine = async (
   id: string,
-  data: UpdateFineData
+  data: UpdateFineData,
+  session?: mongoose.ClientSession,
+  expected?: Pick<UpdateFineData, "paidAmount" | "status">
 ) => {
   if (
     !mongoose.Types.ObjectId.isValid(id)
@@ -224,17 +258,25 @@ export const updateFine = async (
   }
 
   return Fine.findByIdAndUpdate(
-    id,
+    {
+      _id: id,
+      ...(expected?.paidAmount !== undefined
+        ? { paidAmount: expected.paidAmount }
+        : {}),
+      ...(expected?.status !== undefined
+        ? { status: expected.status }
+        : {}),
+    },
     {
       $set: data,
     },
     {
-      new: true,
+      returnDocument: "after",
       runValidators: true,
+      session,
     }
   );
 };
-
 
 /* =========================================================
    DELETE

@@ -8,7 +8,8 @@
     "dev:server": "npm --prefix server run dev",
      "bootstrap:admin": "tsx src/utils/bootstrapAdmin.ts",
     "build": "npm --prefix client run build",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm --prefix server test",
+    "test:db": "npm --prefix server run test:db"
   },
   "repository": {
     "type": "git",

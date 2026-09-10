@@ -154,3 +154,5 @@ export const Fine = mongoose.model<IFine>(
   "Fine",
   fineSchema
 );
+
+fineSchema.index({ status: 1, createdAt: -1 });

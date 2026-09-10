@@ -17,8 +17,8 @@ import {
 
 import { Role } from "../constants/roles.js";
 
-export const getUsers = async () => {
-  return findUsers();
+export const getUsers = async (query: import("../types/pagination.js").PaginationQuery) => {
+  return findUsers(query);
 };
 
 export const getUserById = async (userId: string) => {
@@ -74,7 +74,6 @@ export const updateUser = async (
   data: {
     name?: string;
     email?: string;
-    role?: Role;
     status?: "ACTIVE" | "INACTIVE" | "SUSPENDED";
     memberId?: string;
     department?: string;

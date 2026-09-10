@@ -1,4 +1,7 @@
 import { Book, IBook } from "../models/Book.js";
+import { PaginatedResult, PaginationQuery } from "../types/pagination.js";
+import { createPaginationMetadata, getPaginationOptions } from "../utils/pagination.js";
+import { escapeRegex } from "../utils/search.js";
 
 export interface CreateBookData {
   isbn: string;
@@ -39,14 +42,44 @@ export const getBookByIsbn = async (
   isbn: string
 ): Promise<IBook | null> => {
   return Book.findOne({
-    isbn: isbn.toLowerCase(),
+    isbn: new RegExp(`^${escapeRegex(isbn)}$`, "i"),
   });
 };
 
-export const getBooks = async (): Promise<IBook[]> => {
-  return Book.find()
-    .sort({ createdAt: -1 })
-    .exec();
+export const getBooks = async (
+  query: PaginationQuery
+): Promise<PaginatedResult<IBook>> => {
+  const filters: Record<string, unknown> = {};
+
+  if (query.search) {
+    const search = new RegExp(escapeRegex(query.search), "i");
+    filters.$or = [
+      { title: search },
+      { isbn: search },
+      { authors: search },
+      { publisher: search },
+    ];
+  }
+
+  if (query.status) filters.status = query.status;
+  if (query.category) filters.category = query.category;
+  if (query.dateFrom || query.dateTo) {
+    filters.createdAt = {
+      ...(query.dateFrom ? { $gte: new Date(query.dateFrom) } : {}),
+      ...(query.dateTo ? { $lte: new Date(query.dateTo) } : {}),
+    };
+  }
+
+  const { skip, limit, sort } = getPaginationOptions(query);
+  const [items, total] = await Promise.all([
+    Book.find(filters).sort(sort).skip(skip).limit(limit).exec(),
+    Book.countDocuments(filters).exec(),
+  ]);
+
+  return {
+    items,
+    pagination: createPaginationMetadata(query, total),
+  };
 };
 
 export const updateBook = async (
@@ -57,7 +90,7 @@ export const updateBook = async (
     id,
     data,
     {
-      new: true,
+      returnDocument: "after",
       runValidators: true,
     }
   );

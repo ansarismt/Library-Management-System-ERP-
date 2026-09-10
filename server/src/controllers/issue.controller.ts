@@ -13,6 +13,8 @@ import {
   updateIssueService,
   deleteIssueService,
 } from "../services/issue.service.js";
+import { AUDIT_ACTIONS } from "../constants/auditActions.js";
+import { auditRequest } from "../services/audit.service.js";
 
 
 /* =========================================================
@@ -106,6 +108,22 @@ export const issueBookController =
           notes,
         });
 
+      await auditRequest(req, {
+        action: AUDIT_ACTIONS.ISSUE_CREATED,
+        resourceType: "ISSUE",
+        resourceId: issue?._id?.toString(),
+        description: "Book issued",
+        after: issue ? {
+          bookId: issue.bookId,
+          bookCopyId: issue.bookCopyId,
+          memberId: issue.memberId,
+          status: issue.status,
+          dueAt: issue.dueAt,
+        } : undefined,
+        success: true,
+        statusCode: 201,
+      });
+
       res.status(201).json({
         success: true,
         message:
@@ -132,16 +150,17 @@ export const issueBookController =
 
 export const listIssuesController =
   async (
-    _req: Request,
+    req: Request,
     res: Response
   ): Promise<void> => {
     try {
       const issues =
-        await listIssuesService();
+        await listIssuesService(req.query as never);
 
       res.status(200).json({
         success: true,
-        data: issues,
+        data: issues.items,
+        pagination: issues.pagination,
       });
     } catch (error) {
       const message =
@@ -301,6 +320,37 @@ export const returnBookController =
           }
         );
 
+      await auditRequest(req, {
+        action: AUDIT_ACTIONS.ISSUE_RETURNED,
+        resourceType: "ISSUE",
+        resourceId: id,
+        description: "Book returned",
+        after: {
+          status: issue.issue?.status,
+          dueAt: issue.issue?.dueAt,
+          returnedAt: issue.issue?.returnedAt,
+          fineId: issue.fine?._id,
+        },
+        success: true,
+        statusCode: 200,
+      });
+
+      if (issue.fine) {
+        await auditRequest(req, {
+          action: AUDIT_ACTIONS.FINE_CREATED,
+          resourceType: "FINE",
+          resourceId: issue.fine._id.toString(),
+          description: "Fine created during book return",
+          after: {
+            amount: issue.fine.amount,
+            daysOverdue: issue.fine.daysOverdue,
+            status: issue.fine.status,
+          },
+          success: true,
+          statusCode: 200,
+        });
+      }
+
       res.status(200).json({
         success: true,
         message:
@@ -433,6 +483,20 @@ export const renewBookController =
           }
         );
 
+      await auditRequest(req, {
+        action: AUDIT_ACTIONS.ISSUE_RENEWED,
+        resourceType: "ISSUE",
+        resourceId: id,
+        description: "Book issue renewed",
+        after: {
+          status: issue?.status,
+          dueAt: issue?.dueAt,
+          renewalCount: issue?.renewalCount,
+        },
+        success: true,
+        statusCode: 200,
+      });
+
 
       res.status(200).json({
         success: true,
@@ -482,12 +546,24 @@ export const updateIssueController =
 
       const {
         dueAt,
-        returnedAt,
-        returnedBy,
-        status,
-        renewalCount,
         notes,
       } = req.body;
+
+      const unsupportedFields = [
+        "returnedAt",
+        "returnedBy",
+        "status",
+        "renewalCount",
+      ].filter((field) => req.body[field] !== undefined);
+
+      if (unsupportedFields.length > 0) {
+        res.status(400).json({
+          success: false,
+          message:
+            "Issue status, return details, and renewal count must be changed through the circulation endpoints",
+        });
+        return;
+      }
 
 
       let parsedDueAt:
@@ -515,34 +591,6 @@ export const updateIssueController =
       }
 
 
-      let parsedReturnedAt:
-        Date | undefined;
-
-
-      if (
-        returnedAt !==
-        undefined
-      ) {
-        parsedReturnedAt =
-          new Date(
-            returnedAt
-          );
-
-        if (
-          Number.isNaN(
-            parsedReturnedAt.getTime()
-          )
-        ) {
-          res.status(400).json({
-            success: false,
-            message:
-              "Invalid returnedAt date",
-          });
-          return;
-        }
-      }
-
-
       const issue =
         await updateIssueService(
           id,
@@ -550,18 +598,23 @@ export const updateIssueController =
             dueAt:
               parsedDueAt,
 
-            returnedAt:
-              parsedReturnedAt,
-
-            returnedBy,
-
-            status,
-
-            renewalCount,
-
             notes,
           }
         );
+
+      await auditRequest(req, {
+        action: AUDIT_ACTIONS.ISSUE_UPDATED,
+        resourceType: "ISSUE",
+        resourceId: id,
+        description: "Issue metadata updated",
+        after: {
+          status: issue?.status,
+          dueAt: issue?.dueAt,
+          notes: issue?.notes,
+        },
+        success: true,
+        statusCode: 200,
+      });
 
 
       res.status(200).json({
@@ -614,6 +667,21 @@ export const deleteIssueController =
         await deleteIssueService(
           id
         );
+
+      await auditRequest(req, {
+        action: AUDIT_ACTIONS.ISSUE_DELETED,
+        resourceType: "ISSUE",
+        resourceId: id,
+        description: "Issue deleted",
+        before: issue ? {
+          status: issue.status,
+          dueAt: issue.dueAt,
+          memberId: issue.memberId,
+          bookId: issue.bookId,
+        } : undefined,
+        success: true,
+        statusCode: 200,
+      });
 
 
       res.status(200).json({
