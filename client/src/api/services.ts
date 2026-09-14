@@ -89,6 +89,142 @@ export const finesApi = {
     unwrap<Fine>(api.post<ApiResponse<Fine>>(`/fines/${id}/waive`, body)),
   remove: (id: string) => api.delete(`/fines/${id}`),
 };
+export interface Reservation {
+  _id: string;
+
+  bookId:
+    | string
+    | {
+        _id: string;
+        title?: string;
+        isbn?: string;
+      };
+
+  memberId:
+    | string
+    | {
+        _id: string;
+        name?: string;
+        memberId?: string;
+      };
+
+  reservedAt: string;
+  expiresAt?: string;
+  fulfilledAt?: string;
+  cancelledAt?: string;
+
+  status:
+    | "WAITING"
+    | "READY"
+    | "FULFILLED"
+    | "CANCELLED"
+    | "EXPIRED";
+
+  queuePosition?: number;
+  notes?: string;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const reservationsApi = {
+  // Get all reservations
+  list: () =>
+    unwrap<Reservation[]>(
+      api.get<ApiResponse<Reservation[]>>("/reservations"),
+    ),
+
+  // Get reservations for one member
+  byMember: (memberId: string) =>
+    unwrap<Reservation[]>(
+      api.get<ApiResponse<Reservation[]>>(
+        `/reservations/member/${memberId}`,
+      ),
+    ),
+
+  // Get reservations for one book
+  byBook: (bookId: string) =>
+    unwrap<Reservation[]>(
+      api.get<ApiResponse<Reservation[]>>(
+        `/reservations/book/${bookId}`,
+      ),
+    ),
+
+  // Create reservation
+  create: (body: {
+    bookId: string;
+    memberId: string;
+    expiresAt?: string;
+    notes?: string;
+  }) =>
+    unwrap<Reservation>(
+      api.post<ApiResponse<Reservation>>(
+        "/reservations",
+        body,
+      ),
+    ),
+
+  // Update reservation
+  update: (
+    id: string,
+    body: {
+      expiresAt?: string;
+      notes?: string;
+    },
+  ) =>
+    unwrap<Reservation>(
+      api.patch<ApiResponse<Reservation>>(
+        `/reservations/${id}`,
+        body,
+      ),
+    ),
+
+  // Cancel reservation
+  cancel: (id: string) =>
+    unwrap<Reservation>(
+      api.patch<ApiResponse<Reservation>>(
+        `/reservations/${id}/cancel`,
+        {},
+      ),
+    ),
+
+  // Mark WAITING reservation as READY
+  ready: (id: string) =>
+    unwrap<Reservation>(
+      api.patch<ApiResponse<Reservation>>(
+        `/reservations/${id}/ready`,
+        {},
+      ),
+    ),
+
+  // Fulfill READY reservation and create the issue
+  fulfill: (
+    id: string,
+    body: {
+      dueAt: string;
+      notes?: string;
+    },
+  ) =>
+    unwrap<Reservation>(
+      api.patch<ApiResponse<Reservation>>(
+        `/reservations/${id}/fulfill`,
+        body,
+      ),
+    ),
+
+  // Expire reservation
+  expire: (id: string) =>
+    unwrap<Reservation>(
+      api.patch<ApiResponse<Reservation>>(
+        `/reservations/${id}/expire`,
+        {},
+      ),
+    ),
+
+  // Delete reservation
+  remove: (id: string) =>
+    api.delete(`/reservations/${id}`),
+};
 export const usersApi = {
   list: () => unwrap<User[]>(api.get<ApiResponse<User[]>>("/users")),
   get: (id: string) => unwrap<User>(api.get<ApiResponse<User>>(`/users/${id}`)),
@@ -99,4 +235,87 @@ export const usersApi = {
   remove: (id: string) => api.delete(`/users/${id}`),
   role: (id: string, role: string) =>
     unwrap<User>(api.patch<ApiResponse<User>>(`/users/${id}/role`, { role })),
+};
+
+export interface AuditLog {
+  _id: string;
+  actorUserId?: {
+    _id: string;
+    name: string;
+    email: string;
+    role: string;
+  };
+  actorRole?: string;
+  action: string;
+  resourceType: string;
+  resourceId?: string;
+  description: string;
+  metadata?: Record<string, unknown>;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  success: boolean;
+  statusCode?: number;
+  ipAddress?: string;
+  userAgent?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuditPagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface AuditLogsResponse {
+  success: boolean;
+  data: AuditLog[];
+  pagination: AuditPagination;
+}
+
+export const auditApi = {
+  list: async (params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    action?: string;
+    resourceType?: string;
+    actorUserId?: string;
+    success?: "true" | "false";
+    dateFrom?: string;
+    dateTo?: string;
+    sort?: "createdAt" | "action" | "resourceType" | "success";
+    order?: "asc" | "desc";
+  }) => {
+    const response = await api.get<AuditLogsResponse>("/audit-logs", {
+      params,
+    });
+
+    return response.data;
+  },
+};
+
+export type NotificationType =
+  | "RESERVATION_READY" | "RESERVATION_FULFILLED" | "RESERVATION_CANCELLED" | "RESERVATION_EXPIRED"
+  | "BOOK_ISSUED" | "BOOK_RETURNED" | "BOOK_DUE_SOON" | "BOOK_OVERDUE"
+  | "FINE_CREATED" | "FINE_PAID" | "FINE_WAIVED";
+export interface Notification {
+  _id: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  relatedResourceType?: string;
+  relatedResourceId?: string;
+  isRead: boolean;
+  readAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface NotificationsResponse { success: boolean; data: Notification[]; pagination: { page: number; limit: number; total: number; totalPages: number }; }
+export const notificationsApi = {
+  list: async (params?: { page?: number; limit?: number; unread?: boolean }) => (await api.get<NotificationsResponse>("/notifications", { params })).data,
+  unreadCount: () => unwrap<{ count: number }>(api.get<ApiResponse<{ count: number }>>("/notifications/unread-count")),
+  markRead: (id: string) => unwrap<Notification>(api.patch<ApiResponse<Notification>>(`/notifications/${id}/read`)),
+  markAllRead: () => unwrap<{ modifiedCount: number }>(api.patch<ApiResponse<{ modifiedCount: number }>>("/notifications/read-all")),
 };

@@ -1,0 +1,12 @@
+import { Router } from "express";
+import { authenticate } from "../middleware/auth.middleware.js";
+import { sensitiveMutationLimiter } from "../middleware/rate-limit.middleware.js";
+import { validateParams, validateQuery } from "../middleware/validation.middleware.js";
+import { listNotificationsController, markAllNotificationsReadController, markNotificationReadController, unreadCountController } from "../controllers/notification.controller.js";
+import { notificationIdParamsSchema, notificationsQuerySchema } from "../validators/notification.validator.js";
+const router = Router();
+router.get("/", authenticate, validateQuery(notificationsQuerySchema), listNotificationsController);
+router.get("/unread-count", authenticate, unreadCountController);
+router.patch("/read-all", authenticate, sensitiveMutationLimiter, markAllNotificationsReadController);
+router.patch("/:id/read", authenticate, sensitiveMutationLimiter, validateParams(notificationIdParamsSchema), markNotificationReadController);
+export default router;

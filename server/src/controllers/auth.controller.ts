@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { findUserById } from "../repositories/user.repository.js";
+import { Member } from "../models/Member.js";
 import { AuthenticatedRequest } from "../middleware/auth.middleware.js";
 import {
   login,
@@ -253,6 +254,18 @@ export const meController = async (
       return;
     }
 
+    let linkedMemberId: string | undefined;
+
+    if (user.memberId) {
+      const member = await Member.findOne({
+        memberId: user.memberId,
+      })
+        .select("_id")
+        .lean();
+
+      linkedMemberId = member?._id?.toString();
+    }
+
     res.status(200).json({
       success: true,
       data: {
@@ -261,6 +274,7 @@ export const meController = async (
         email: user.email,
         role: user.role,
         status: user.status,
+        memberId: linkedMemberId,
       },
     });
   } catch {

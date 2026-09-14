@@ -128,4 +128,42 @@ export interface Fine {
   waiverReason?: string;
   notes?: string;
 }
+
+export interface Reservation {
+  _id: string;
+
+  bookId:
+    | string
+    | {
+        _id: string;
+        title?: string;
+        isbn?: string;
+      };
+
+  memberId:
+    | string
+    | {
+        _id: string;
+        name?: string;
+        memberId?: string;
+      };
+
+  reservedAt: string;
+  expiresAt?: string;
+  fulfilledAt?: string;
+  cancelledAt?: string;
+
+  status:
+    | "WAITING"
+    | "READY"
+    | "FULFILLED"
+    | "CANCELLED"
+    | "EXPIRED";
+
+  queuePosition?: number;
+  notes?: string;
+
+  createdAt: string;
+  updatedAt: string;
+}
 export type ApiResponse<T> = { success: boolean; message?: string; data: T };

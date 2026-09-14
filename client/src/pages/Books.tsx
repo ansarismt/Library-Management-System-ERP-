@@ -1,20 +1,31 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, Copy, Plus, Trash2, Pencil } from "lucide-react";
+import {
+  BookOpen,
+  CalendarPlus,
+  Copy,
+  Pencil,
+  Plus,
+  Trash2,
+} from "lucide-react";
 
-import { booksApi, copiesApi } from "../api/services";
+import {
+  booksApi,
+  copiesApi,
+  reservationsApi,
+} from "../api/services";
 
 import {
   Badge,
   Button,
   Empty,
   Input,
+  Loading,
   Modal,
   PageHeader,
   SearchBox,
   Select,
   Textarea,
-  Loading,
 } from "../components/ui";
 
 import { ErrorState, errorMessage } from "../components/ErrorState";
@@ -51,7 +62,7 @@ const emptyCopy = {
 };
 
 export default function Books() {
-  const { can } = useAuth();
+  const { user, can } = useAuth();
 
   const canBookCreate = can("BOOK_CREATE");
   const canBookUpdate = can("BOOK_UPDATE");
@@ -61,6 +72,11 @@ export default function Books() {
   const canCopyCreate = can("BOOK_COPY_CREATE");
   const canCopyUpdate = can("BOOK_COPY_UPDATE");
 
+  const canReserve = can("RESERVATION_CREATE");
+  const canReadReservations = can("RESERVATION_READ");
+
+  const isStudent = user?.role === "STUDENT";
+
   const [tab, setTab] = useState<"books" | "copies">("books");
   const [search, setSearch] = useState("");
 
@@ -69,60 +85,168 @@ export default function Books() {
 
   const qc = useQueryClient();
 
+  /*
+   * Catalogue
+   */
   const bq = useQuery({
     queryKey: ["books"],
     queryFn: booksApi.list,
   });
 
+  /*
+   * Physical copies are only loaded when the
+   * authenticated user has permission to read them.
+   *
+   * Students normally do not have BOOK_COPY_READ.
+   */
   const cq = useQuery({
     queryKey: ["copies"],
     queryFn: copiesApi.list,
     enabled: canCopyRead,
   });
 
-  const bm = useMutation({
-    mutationFn: (v: { id?: string; body: any }) =>
-      v.id ? booksApi.update(v.id, v.body) : booksApi.create(v.body),
+  /*
+   * Student's own reservations.
+   *
+   * The backend expects the MongoDB Member _id,
+   * which is supplied by user.memberId.
+   */
+  const rq = useQuery({
+    queryKey: ["my-reservations", user?.memberId],
+    queryFn: () => {
+      if (!user?.memberId) {
+        throw new Error(
+          "Your account is not linked to a library member.",
+        );
+      }
+
+      return reservationsApi.byMember(user.memberId);
+    },
+    enabled:
+      isStudent &&
+      canReadReservations &&
+      Boolean(user?.memberId),
+  });
+
+  /*
+   * Create reservation.
+   */
+  const rm = useMutation({
+    mutationFn: (bookId: string) => {
+      if (!user?.memberId) {
+        throw new Error(
+          "Your account is not linked to a library member.",
+        );
+      }
+
+      return reservationsApi.create({
+        bookId,
+        memberId: user.memberId,
+      });
+    },
 
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["books"] });
+      qc.invalidateQueries({
+        queryKey: ["my-reservations", user?.memberId],
+      });
+
+      qc.invalidateQueries({
+        queryKey: ["books"],
+      });
+    },
+  });
+
+  /*
+   * Book management.
+   */
+  const bm = useMutation({
+    mutationFn: (v: { id?: string; body: any }) =>
+      v.id
+        ? booksApi.update(v.id, v.body)
+        : booksApi.create(v.body),
+
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["books"],
+      });
+
       setBookModal(false);
     },
   });
 
+  /*
+   * Physical-copy management.
+   */
   const cm = useMutation({
     mutationFn: (v: { id?: string; body: any }) =>
-      v.id ? copiesApi.update(v.id, v.body) : copiesApi.create(v.body),
+      v.id
+        ? copiesApi.update(v.id, v.body)
+        : copiesApi.create(v.body),
 
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["copies"] });
-      qc.invalidateQueries({ queryKey: ["books"] });
+      qc.invalidateQueries({
+        queryKey: ["copies"],
+      });
+
+      qc.invalidateQueries({
+        queryKey: ["books"],
+      });
+
       setCopyModal(false);
     },
   });
 
   const books = bq.data ?? [];
   const copies = cq.data ?? [];
+  const reservations = rq.data ?? [];
 
+  /*
+   * Search filtering.
+   */
   const filtered = useMemo(() => {
-    const s = search.toLowerCase();
+    const s = search.toLowerCase().trim();
 
     if (tab === "books") {
       return books.filter((x) =>
-        `${x.title} ${x.isbn} ${x.authors.join(" ")} ${x.category ?? ""}`
+        `${x.title} ${x.isbn} ${x.authors.join(" ")} ${
+          x.category ?? ""
+        }`
           .toLowerCase()
           .includes(s),
       );
     }
 
     return copies.filter((x) =>
-      `${x.accessionNumber} ${x.barcode ?? ""} ${titleOf(x.bookId)}`
+      `${x.accessionNumber} ${x.barcode ?? ""} ${titleOf(
+        x.bookId,
+      )}`
         .toLowerCase()
         .includes(s),
     );
   }, [tab, books, copies, search]);
 
-  if (bq.isPending || (canCopyRead && cq.isPending)) {
+  /*
+   * Physical copies tab can only be shown when the
+   * current user has BOOK_COPY_READ.
+   */
+  const showingCopies =
+    tab === "copies" && canCopyRead;
+
+  /*
+   * If a student has no member linkage, don't silently
+   * let reservation UI fail later.
+   */
+  const reservationAccountError =
+    isStudent &&
+    canReserve &&
+    canReadReservations &&
+    !user?.memberId;
+
+  if (
+    bq.isPending ||
+    (canCopyRead && cq.isPending) ||
+    (isStudent && canReadReservations && rq.isPending)
+  ) {
     return <Loading />;
   }
 
@@ -144,17 +268,24 @@ export default function Books() {
     );
   }
 
-  /*
-   * If current user cannot read physical copies,
-   * force the page back to Titles.
-   */
-  const showingCopies = tab === "copies" && canCopyRead;
+  if (isStudent && canReadReservations && rq.error) {
+    return (
+      <ErrorState
+        error={rq.error}
+        onRetry={() => rq.refetch()}
+      />
+    );
+  }
 
   return (
     <>
       <PageHeader
         title="Books & copies"
-        subtitle="Manage catalogue records and physical inventory."
+        subtitle={
+          isStudent
+            ? "Browse the library catalogue and reserve unavailable books."
+            : "Manage catalogue records and physical inventory."
+        }
         action={
           tab === "books" && canBookCreate ? (
             <Button onClick={() => setBookModal(null)}>
@@ -169,6 +300,13 @@ export default function Books() {
           ) : null
         }
       />
+
+      {reservationAccountError && (
+        <div className="form-error" style={{ marginBottom: 16 }}>
+          Your student account is not linked to a library member,
+          so reservations cannot be created.
+        </div>
+      )}
 
       <div className="tabs">
         <button
@@ -221,93 +359,176 @@ export default function Books() {
         />
       ) : !showingCopies ? (
         <div className="card-grid">
-          {(filtered as Book[]).map((book) => (
-            <div className="book-card" key={book._id}>
-              <div className="book-cover">
-                {book.coverImage ? (
-                  <img src={book.coverImage} alt="" />
-                ) : (
-                  <BookOpen size={32} />
-                )}
-              </div>
+          {(filtered as Book[]).map((book) => {
+            /*
+             * Find an active reservation belonging to this
+             * student's book.
+             *
+             * WAITING and READY are considered active.
+             */
+            const existingReservation =
+              reservations.find((reservation) => {
+                const reservationBookId =
+                  typeof reservation.bookId === "string"
+                    ? reservation.bookId
+                    : reservation.bookId._id;
 
-              <div className="book-body">
-                <div className="book-top">
-                  <Badge tone={tone(book.status)}>
-                    {book.status}
-                  </Badge>
+                return (
+                  reservationBookId === book._id &&
+                  ["WAITING", "READY"].includes(
+                    reservation.status,
+                  )
+                );
+              });
 
-                  <span>{book.isbn}</span>
+            const isUnavailable =
+              book.availableCopies === 0;
+
+            const showReserveButton =
+              isStudent &&
+              canReserve &&
+              canReadReservations &&
+              Boolean(user?.memberId) &&
+              isUnavailable &&
+              !existingReservation;
+
+            return (
+              <div
+                className="book-card"
+                key={book._id}
+              >
+                <div className="book-cover">
+                  {book.coverImage ? (
+                    <img
+                      src={book.coverImage}
+                      alt=""
+                    />
+                  ) : (
+                    <BookOpen size={32} />
+                  )}
                 </div>
 
-                <h3>{book.title}</h3>
+                <div className="book-body">
+                  <div className="book-top">
+                    <Badge tone={tone(book.status)}>
+                      {book.status}
+                    </Badge>
 
-                <p>{book.authors.join(", ")}</p>
-
-                <div className="book-meta">
-                  <span>
-                    {book.category || "Uncategorized"}
-                  </span>
-
-                  <strong>
-                    {book.availableCopies}/{book.totalCopies} available
-                  </strong>
-                </div>
-
-                {(canBookUpdate ||
-                  canCopyCreate ||
-                  canBookDelete) && (
-                  <div className="card-actions">
-                    {canBookUpdate && (
-                      <Button
-                        variant="ghost"
-                        onClick={() => setBookModal(book)}
-                      >
-                        <Pencil size={15} />
-                        Edit
-                      </Button>
-                    )}
-
-                    {canCopyCreate && (
-                      <Button
-                        variant="ghost"
-                        onClick={() => {
-                          setCopyModal({
-                            ...emptyCopy,
-                            bookId: book._id,
-                          } as unknown as BookCopy);
-                        }}
-                      >
-                        <Plus size={15} />
-                        Copy
-                      </Button>
-                    )}
-
-                    {canBookDelete && (
-                      <Button
-                        variant="danger"
-                        onClick={async () => {
-                          if (
-                            confirm(
-                              `Delete ${book.title}?`,
-                            )
-                          ) {
-                            await booksApi.remove(book._id);
-
-                            qc.invalidateQueries({
-                              queryKey: ["books"],
-                            });
-                          }
-                        }}
-                      >
-                        <Trash2 size={15} />
-                      </Button>
-                    )}
+                    <span>{book.isbn}</span>
                   </div>
-                )}
+
+                  <h3>{book.title}</h3>
+
+                  <p>{book.authors.join(", ")}</p>
+
+                  <div className="book-meta">
+                    <span>
+                      {book.category ||
+                        "Uncategorized"}
+                    </span>
+
+                    <strong>
+                      {book.availableCopies}/
+                      {book.totalCopies} available
+                    </strong>
+                  </div>
+
+                  {rm.error && rm.variables === book._id ? (
+                    <div
+                      className="form-error"
+                      style={{ marginTop: 10 }}
+                    >
+                      {errorMessage(rm.error)}
+                    </div>
+                  ) : null}
+
+                  {(canBookUpdate ||
+                    canCopyCreate ||
+                    canBookDelete ||
+                    showReserveButton ||
+                    existingReservation) && (
+                    <div className="card-actions">
+                      {showReserveButton && (
+                        <Button
+                          loading={rm.isPending}
+                          onClick={() =>
+                            rm.mutate(book._id)
+                          }
+                        >
+                          <CalendarPlus size={15} />
+                          Reserve
+                        </Button>
+                      )}
+
+                      {existingReservation && (
+                        <Button
+                          variant="secondary"
+                          disabled
+                        >
+                          <CalendarPlus size={15} />
+
+                          {existingReservation.status ===
+                          "READY"
+                            ? "Ready for pickup"
+                            : "Reserved"}
+                        </Button>
+                      )}
+
+                      {canBookUpdate && (
+                        <Button
+                          variant="ghost"
+                          onClick={() =>
+                            setBookModal(book)
+                          }
+                        >
+                          <Pencil size={15} />
+                          Edit
+                        </Button>
+                      )}
+
+                      {canCopyCreate && (
+                        <Button
+                          variant="ghost"
+                          onClick={() => {
+                            setCopyModal({
+                              ...emptyCopy,
+                              bookId: book._id,
+                            } as unknown as BookCopy);
+                          }}
+                        >
+                          <Plus size={15} />
+                          Copy
+                        </Button>
+                      )}
+
+                      {canBookDelete && (
+                        <Button
+                          variant="danger"
+                          onClick={async () => {
+                            if (
+                              confirm(
+                                `Delete ${book.title}?`,
+                              )
+                            ) {
+                              await booksApi.remove(
+                                book._id,
+                              );
+
+                              qc.invalidateQueries({
+                                queryKey: ["books"],
+                              });
+                            }
+                          }}
+                        >
+                          <Trash2 size={15} />
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="panel table-wrap">
@@ -327,16 +548,21 @@ export default function Books() {
               {(filtered as BookCopy[]).map((c) => (
                 <tr key={c._id}>
                   <td>
-                    <strong>{c.accessionNumber}</strong>
+                    <strong>
+                      {c.accessionNumber}
+                    </strong>
 
                     <small className="table-sub">
-                      {c.barcode || "No barcode"}
+                      {c.barcode ||
+                        "No barcode"}
                     </small>
                   </td>
 
                   <td>{titleOf(c.bookId)}</td>
 
-                  <td>{c.location || "—"}</td>
+                  <td>
+                    {c.location || "—"}
+                  </td>
 
                   <td>{c.condition}</td>
 
@@ -350,7 +576,9 @@ export default function Books() {
                     {canCopyUpdate && (
                       <Button
                         variant="ghost"
-                        onClick={() => setCopyModal(c)}
+                        onClick={() =>
+                          setCopyModal(c)
+                        }
                       >
                         <Pencil size={15} />
                       </Button>
@@ -427,7 +655,9 @@ function BookForm({
 
   return (
     <Modal
-      title={initial ? "Edit book" : "Add book"}
+      title={
+        initial ? "Edit book" : "Add book"
+      }
       onClose={onClose}
     >
       <form
@@ -437,14 +667,16 @@ function BookForm({
 
           onSave({
             ...v,
+
             authors: v.authors
               .split(",")
               .map((x: string) => x.trim())
               .filter(Boolean),
 
-            publicationYear: v.publicationYear
-              ? Number(v.publicationYear)
-              : undefined,
+            publicationYear:
+              v.publicationYear
+                ? Number(v.publicationYear)
+                : undefined,
 
             totalCopies: Number(v.totalCopies),
           });
@@ -490,7 +722,10 @@ function BookForm({
           type="number"
           value={v.publicationYear}
           onChange={(e) =>
-            set("publicationYear", e.target.value)
+            set(
+              "publicationYear",
+              e.target.value,
+            )
           }
         />
 
@@ -525,7 +760,10 @@ function BookForm({
           required
           value={v.totalCopies}
           onChange={(e) =>
-            set("totalCopies", e.target.value)
+            set(
+              "totalCopies",
+              e.target.value,
+            )
           }
         />
 
@@ -545,7 +783,10 @@ function BookForm({
           label="Cover image URL"
           value={v.coverImage}
           onChange={(e) =>
-            set("coverImage", e.target.value)
+            set(
+              "coverImage",
+              e.target.value,
+            )
           }
         />
 
@@ -554,7 +795,10 @@ function BookForm({
           className="full"
           value={v.description}
           onChange={(e) =>
-            set("description", e.target.value)
+            set(
+              "description",
+              e.target.value,
+            )
           }
         />
 
@@ -601,6 +845,7 @@ function CopyForm({
     initial
       ? {
           ...initial,
+
           bookId:
             typeof initial.bookId === "string"
               ? initial.bookId
@@ -631,6 +876,7 @@ function CopyForm({
 
           onSave({
             ...v,
+
             price: v.price
               ? Number(v.price)
               : undefined,
@@ -646,7 +892,10 @@ function CopyForm({
             required
             value={v.bookId}
             onChange={(e) =>
-              set("bookId", e.target.value)
+              set(
+                "bookId",
+                e.target.value,
+              )
             }
           >
             <option value="">
@@ -681,7 +930,10 @@ function CopyForm({
           label="Barcode"
           value={v.barcode}
           onChange={(e) =>
-            set("barcode", e.target.value)
+            set(
+              "barcode",
+              e.target.value,
+            )
           }
         />
 
@@ -689,7 +941,10 @@ function CopyForm({
           label="Location"
           value={v.location}
           onChange={(e) =>
-            set("location", e.target.value)
+            set(
+              "location",
+              e.target.value,
+            )
           }
         />
 
@@ -697,7 +952,10 @@ function CopyForm({
           label="Status"
           value={v.status}
           onChange={(e) =>
-            set("status", e.target.value)
+            set(
+              "status",
+              e.target.value,
+            )
           }
         >
           {[
@@ -718,16 +976,22 @@ function CopyForm({
           label="Condition"
           value={v.condition}
           onChange={(e) =>
-            set("condition", e.target.value)
+            set(
+              "condition",
+              e.target.value,
+            )
           }
         >
-          {["NEW", "GOOD", "FAIR", "POOR"].map(
-            (x) => (
-              <option key={x}>
-                {x}
-              </option>
-            ),
-          )}
+          {[
+            "NEW",
+            "GOOD",
+            "FAIR",
+            "POOR",
+          ].map((x) => (
+            <option key={x}>
+              {x}
+            </option>
+          ))}
         </Select>
 
         <Input
@@ -752,7 +1016,10 @@ function CopyForm({
           step="0.01"
           value={v.price}
           onChange={(e) =>
-            set("price", e.target.value)
+            set(
+              "price",
+              e.target.value,
+            )
           }
         />
 
@@ -761,7 +1028,10 @@ function CopyForm({
           className="full"
           value={v.notes}
           onChange={(e) =>
-            set("notes", e.target.value)
+            set(
+              "notes",
+              e.target.value,
+            )
           }
         />
 

@@ -3,7 +3,7 @@ import { calculateFineService } from "./fine.service.js";
 
 import {
   createIssue,
-  getIssues,
+   getIssues,
   getIssueById,
   getIssuesByMemberId,
   getActiveIssuesByMemberId,
@@ -18,6 +18,7 @@ import {
 import { Book } from "../models/Book.js";
 import { BookCopy } from "../models/BookCopy.js";
 import { Member } from "../models/Member.js";
+import { notifyMemberEvent } from "./notification.service.js";
 
 const MAX_RENEWALS = 2;
 
@@ -97,6 +98,7 @@ export const issueBookService = async (
   const session =
     existingSession ??
     await mongoose.startSession();
+
   const ownsSession = !existingSession;
 
   try {
@@ -104,78 +106,102 @@ export const issueBookService = async (
       session.startTransaction();
     }
 
-  /* -------------------------------------------------------
-     CHECK BOOK
-  ------------------------------------------------------- */
+    /* -------------------------------------------------------
+       CHECK BOOK
+    ------------------------------------------------------- */
 
-  const book = await Book.findById(bookId).session(session);
+    const book =
+      await Book.findById(bookId).session(session);
 
-  if (!book) {
-    throw new Error("Book not found");
-  }
+    if (!book) {
+      throw new Error("Book not found");
+    }
 
-  /* -------------------------------------------------------
-     CHECK BOOK COPY
-  ------------------------------------------------------- */
+    /* -------------------------------------------------------
+       CHECK BOOK COPY
+    ------------------------------------------------------- */
 
-  const bookCopy = await BookCopy.findById(bookCopyId).session(session);
+    const bookCopy =
+      await BookCopy.findById(bookCopyId).session(session);
 
-  if (!bookCopy) {
-    throw new Error("Book copy not found");
-  }
+    if (!bookCopy) {
+      throw new Error("Book copy not found");
+    }
 
-  if (bookCopy.bookId.toString() !== bookId) {
-    throw new Error(
-      "Book copy does not belong to the selected book"
-    );
-  }
+    if (bookCopy.bookId.toString() !== bookId) {
+      throw new Error(
+        "Book copy does not belong to the selected book"
+      );
+    }
 
-  if (bookCopy.status !== "AVAILABLE") {
-    throw new Error(
-      `Book copy is not available. Current status: ${bookCopy.status}`
-    );
-  }
+    /*
+     * A normal issue uses an AVAILABLE copy.
+     *
+     * A reservation fulfillment uses a RESERVED copy.
+     * RESERVED means the copy was already held for a member,
+     * so availability was already decreased when the
+     * reservation became READY.
+     */
+    const isReservationFulfillment =
+      bookCopy.status === "RESERVED";
 
-  /* -------------------------------------------------------
-     CHECK MEMBER
-  ------------------------------------------------------- */
+    if (
+      bookCopy.status !== "AVAILABLE" &&
+      !isReservationFulfillment
+    ) {
+      throw new Error(
+        `Book copy is not available. Current status: ${bookCopy.status}`
+      );
+    }
 
-  const member = await Member.findById(memberId).session(session);
+    /* -------------------------------------------------------
+       CHECK MEMBER
+    ------------------------------------------------------- */
 
-  if (!member) {
-    throw new Error("Member not found");
-  }
+    const member =
+      await Member.findById(memberId).session(session);
 
-  if (member.status !== "ACTIVE") {
-    throw new Error(
-      `Member is not active. Current status: ${member.status}`
-    );
-  }
+    if (!member) {
+      throw new Error("Member not found");
+    }
 
-  /* -------------------------------------------------------
-     CHECK EXISTING ACTIVE ISSUE
-  ------------------------------------------------------- */
+    if (member.status !== "ACTIVE") {
+      throw new Error(
+        `Member is not active. Current status: ${member.status}`
+      );
+    }
 
-  const activeIssue = await getActiveIssueByCopyId(
-    bookCopyId,
-    session
-  );
+    /* -------------------------------------------------------
+       CHECK EXISTING ACTIVE ISSUE
+    ------------------------------------------------------- */
 
-  if (activeIssue) {
-    throw new Error(
-      "This book copy is already issued"
-    );
-  }
+    const activeIssue =
+      await getActiveIssueByCopyId(
+        bookCopyId,
+        session
+      );
 
-  /* -------------------------------------------------------
-     CHECK BOOK AVAILABILITY
-  ------------------------------------------------------- */
+    if (activeIssue) {
+      throw new Error(
+        "This book copy is already issued"
+      );
+    }
 
-  if (book.availableCopies <= 0) {
-    throw new Error(
-      "Book has no available copies"
-    );
-  }
+    /* -------------------------------------------------------
+       CHECK BOOK AVAILABILITY
+       Only normal issues need an available copy count.
+       Reservation fulfillment already consumed the
+       availability count when the copy was reserved.
+    ------------------------------------------------------- */
+
+    if (
+      !isReservationFulfillment &&
+      book.availableCopies <= 0
+    ) {
+      throw new Error(
+        "Book has no available copies"
+      );
+    }
 
     /* -------------------------------------------------------
        CREATE ISSUE
@@ -191,10 +217,11 @@ export const issueBookService = async (
       notes,
     };
 
-    const issue = await createIssue(
-      issueData,
-      session
-    );
+    const issue =
+      await createIssue(
+        issueData,
+        session
+      );
 
     if (!issue) {
       throw new Error(
@@ -204,22 +231,42 @@ export const issueBookService = async (
 
     /* -------------------------------------------------------
        UPDATE BOOK COPY
+
+       NORMAL:
        AVAILABLE -> ISSUED
 
-       The status condition protects against a race condition.
+       RESERVATION:
+       RESERVED -> ISSUED
+
+       reservationId is cleared after fulfillment.
     ------------------------------------------------------- */
+
+    const copyFilter: Record<string, unknown> = {
+      _id: bookCopyId,
+    };
+
+    if (isReservationFulfillment) {
+      copyFilter.status = "RESERVED";
+    } else {
+      copyFilter.status = "AVAILABLE";
+    }
+
+    const copyUpdate: Record<string, unknown> = {
+      $set: {
+        status: "ISSUED",
+      },
+    };
+
+    if (isReservationFulfillment) {
+      copyUpdate.$unset = {
+        reservationId: 1,
+      };
+    }
 
     const updatedBookCopy =
       await BookCopy.findOneAndUpdate(
-        {
-          _id: bookCopyId,
-          status: "AVAILABLE",
-        },
-        {
-          $set: {
-            status: "ISSUED",
-          },
-        },
+        copyFilter,
+        copyUpdate,
         {
           session,
           returnDocument: "after",
@@ -229,41 +276,51 @@ export const issueBookService = async (
 
     if (!updatedBookCopy) {
       throw new Error(
-        "Book copy is no longer available"
+        isReservationFulfillment
+          ? "Reserved book copy is no longer available for fulfillment"
+          : "Book copy is no longer available"
       );
     }
 
     /* -------------------------------------------------------
-       UPDATE BOOK
+       UPDATE BOOK AVAILABILITY
+
+       NORMAL ISSUE:
        availableCopies - 1
 
-       $gt: 0 prevents negative availability.
+       RESERVATION FULFILLMENT:
+       NO CHANGE
+
+       The copy was already removed from availability
+       when it was changed:
+       AVAILABLE -> RESERVED
     ------------------------------------------------------- */
 
-    const updatedBook =
-      await Book.findOneAndUpdate(
-        {
-          _id: bookId,
-          availableCopies: {
-            $gt: 0,
+    if (!isReservationFulfillment) {
+      const updatedBook =
+        await Book.findOneAndUpdate(
+          {
+            _id: new mongoose.Types.ObjectId(bookId),
+            availableCopies: {
+              $gt: 0,
+            },
           },
-        },
-        {
-          $inc: {
-            availableCopies: -1,
+          {
+            $inc: {
+              availableCopies: -1,
+            },
           },
-        },
-        {
-          session,
-          returnDocument: "after",
-          runValidators: true,
-        }
-      );
+          {
+            session,
+            returnDocument: "after",
+          }
+        );
 
-    if (!updatedBook) {
-      throw new Error(
-        "Book has no available copies"
-      );
+      if (!updatedBook) {
+        throw new Error(
+          "Book has no available copies"
+        );
+      }
     }
 
     /* -------------------------------------------------------
@@ -271,21 +328,32 @@ export const issueBookService = async (
     ------------------------------------------------------- */
 
     if (ownsSession) {
-  await session.commitTransaction();
-}
+      await session.commitTransaction();
+    }
 
     /* -------------------------------------------------------
-       GET FINAL POPULATED ISSUE
-       Outside transaction after successful commit.
+       RETURN
     ------------------------------------------------------- */
 
     if (existingSession) {
       return issue;
     }
 
-    return await getIssueById(
+    const finalIssue =
+      await getIssueById(
+        issue._id.toString()
+      );
+
+    await notifyMemberEvent(
+      memberId,
+      "BOOK_ISSUED",
+      "Book issued",
+      `"${book.title}" has been issued to you.`,
+      "ISSUE",
       issue._id.toString()
     );
+
+    return finalIssue;
 
   } catch (error) {
 
@@ -293,9 +361,12 @@ export const issueBookService = async (
        ROLLBACK
     ------------------------------------------------------- */
 
-    if (ownsSession) {
-  await session.abortTransaction();
-}
+    if (
+      ownsSession &&
+      session.inTransaction()
+    ) {
+      await session.abortTransaction();
+    }
 
     throw error;
 
@@ -306,8 +377,8 @@ export const issueBookService = async (
     ------------------------------------------------------- */
 
     if (ownsSession) {
-  await session.endSession();
-}
+      await session.endSession();
+    }
   }
 };
 
@@ -328,25 +399,18 @@ export const listIssuesService = async (
 export const getIssueService = async (
   id: string
 ) => {
-  if (
-    !mongoose.Types.ObjectId.isValid(id)
-  ) {
-    throw new Error(
-      "Invalid issue ID"
-    );
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new Error("Invalid issue ID");
   }
 
   const issue = await getIssueById(id);
 
   if (!issue) {
-    throw new Error(
-      "Issue not found"
-    );
+    throw new Error("Issue not found");
   }
 
   return issue;
 };
-
 /* =========================================================
    LIST MEMBER ISSUES
 ========================================================= */
@@ -617,6 +681,12 @@ export const returnBookService =
           issueId
         );
 
+      if (finalIssue) {
+        const bookTitle = typeof finalIssue.bookId === "object" && "title" in finalIssue.bookId ? (finalIssue.bookId as unknown as { title?: string }).title : "Your book";
+        await notifyMemberEvent(issue.memberId.toString(), "BOOK_RETURNED", "Book returned", `\"${bookTitle}\" has been returned successfully.`, "ISSUE", issueId);
+      }
+      if (fine) await notifyMemberEvent(issue.memberId.toString(), "FINE_CREATED", "Fine created", `A fine of ${fine.amount} has been added to your account.`, "FINE", fine._id.toString());
+
       return {
         issue:
           finalIssue,
@@ -724,7 +794,7 @@ export const renewBookService = async (
 
     return getIssueById(issueId);
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) await session.abortTransaction();
     throw error;
   } finally {
     await session.endSession();

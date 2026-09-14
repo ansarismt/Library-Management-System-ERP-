@@ -12,6 +12,7 @@ import {
 
 import { Issue } from "../models/Issue.js";
 import { Member } from "../models/Member.js";
+import { notifyMemberEvent } from "./notification.service.js";
 
 
 
@@ -151,7 +152,9 @@ if (daysOverdue <= 0) {
       return fine;
     }
 
-    return getFineById(fine._id.toString());
+    const result = await getFineById(fine._id.toString());
+    await notifyMemberEvent(issue.memberId.toString(), "FINE_CREATED", "Fine created", `A fine of ${amount} has been added to your account.`, "FINE", fine._id.toString());
+    return result;
   };
 
 
@@ -364,9 +367,9 @@ export const payFineService =
         }
       );
 
-      return getFineById(
-        fineId
-      );
+      const result = await getFineById(fineId);
+      if (result?.status === "PAID") await notifyMemberEvent(result.memberId.toString(), "FINE_PAID", "Fine paid", "Your fine payment has been completed.", "FINE", fineId);
+      return result;
     } finally {
       await session.endSession();
     }
@@ -461,9 +464,9 @@ export const waiveFineService =
       );
     }
 
-    return getFineById(
-      fineId
-    );
+    const result = await getFineById(fineId);
+    if (result) await notifyMemberEvent(result.memberId.toString(), "FINE_WAIVED", "Fine waived", "Your fine has been waived.", "FINE", fineId);
+    return result;
   };
 
 

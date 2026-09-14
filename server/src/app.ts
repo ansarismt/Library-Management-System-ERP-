@@ -14,6 +14,7 @@ import reservationRoutes from "./routes/reservation.routes.js";
 import reportRoutes from "./routes/report.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import auditRoutes from "./routes/audit.routes.js";
+import notificationRoutes from "./routes/notification.routes.js";
 import {
   errorHandler,
   notFoundHandler,
@@ -78,6 +79,7 @@ app.use("/api/v1/reservations", reservationRoutes);
 app.use("/api/v1/reports", reportRoutes);
 app.use("/api/v1/dashboard", dashboardRoutes);
 app.use("/api/v1/audit-logs", auditRoutes);
+app.use("/api/v1/notifications", notificationRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

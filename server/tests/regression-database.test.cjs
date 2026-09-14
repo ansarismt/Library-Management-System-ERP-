@@ -78,6 +78,7 @@ const createMember = async () => {
 
 const createBookWithCopy = async ({ availableCopies = 1 } = {}) => {
   const unique = new mongoose.Types.ObjectId().toString();
+
   const book = await Book.create({
     isbn: `ISBN-${unique}`,
     title: "Test Book",
@@ -87,12 +88,14 @@ const createBookWithCopy = async ({ availableCopies = 1 } = {}) => {
     status: "ACTIVE",
     category: "Testing",
   });
+
   const copy = await BookCopy.create({
     bookId: book._id,
     accessionNumber: `ACC-${unique}`,
-    status: "AVAILABLE",
+    status: availableCopies > 0 ? "AVAILABLE" : "ISSUED",
     condition: "GOOD",
   });
+
   return { book, copy };
 };
 
@@ -214,26 +217,97 @@ test("a failed issue transaction rolls back issue, copy, and availability", asyn
 
 test("reservation queue enforces queue head and fulfillment persists its issue", async () => {
   const librarian = await createUser({ role: "LIBRARIAN" });
+
   const firstMember = await createMember();
   const secondMember = await createMember();
-  const firstUser = await createUser({ role: "STUDENT", memberId: firstMember._id.toString() });
-  const secondUser = await createUser({ role: "STUDENT", memberId: secondMember._id.toString() });
-  const { book, copy } = await createBookWithCopy({ availableCopies: 0 });
-  const first = await createReservationService({ bookId: book._id.toString(), memberId: firstMember._id.toString() }, actorFor(firstUser));
-  const second = await createReservationService({ bookId: book._id.toString(), memberId: secondMember._id.toString() }, actorFor(secondUser));
+
+  const firstUser = await createUser({
+    role: "STUDENT",
+    memberId: firstMember._id.toString(),
+  });
+
+  const secondUser = await createUser({
+    role: "STUDENT",
+    memberId: secondMember._id.toString(),
+  });
+
+  // No physical copy is available initially.
+  const { book, copy } = await createBookWithCopy({
+    availableCopies: 0,
+  });
+
+  const first = await createReservationService(
+    {
+      bookId: book._id.toString(),
+      memberId: firstMember._id.toString(),
+    },
+    actorFor(firstUser)
+  );
+
+  const second = await createReservationService(
+    {
+      bookId: book._id.toString(),
+      memberId: secondMember._id.toString(),
+    },
+    actorFor(secondUser)
+  );
+
+  // Both reservations must wait because no copy is available.
+  assert.equal(first.status, "WAITING");
+  assert.equal(second.status, "WAITING");
   assert.equal(first.queuePosition, 1);
   assert.equal(second.queuePosition, 2);
-  await assert.rejects(markReservationReadyService(second._id.toString(), actorFor(librarian)), /first reservation/);
-  await markReservationReadyService(first._id.toString(), actorFor(librarian));
-  await Book.findByIdAndUpdate(book._id, { availableCopies: 1 });
-  const fulfilled = await fulfillReservationService(first._id.toString(), {
-    issuedBy: librarian._id.toString(), dueAt: new Date(Date.now() + 86_400_000),
-  }, actorFor(librarian));
-  assert.equal(fulfilled.reservation.status, "FULFILLED");
-  assert.equal((await Issue.findById(fulfilled.issue._id)).status, "ISSUED");
-  assert.equal((await BookCopy.findById(copy._id)).status, "ISSUED");
-});
 
+  // Second reservation cannot skip the first reservation.
+  await assert.rejects(
+    markReservationReadyService(
+      second._id.toString(),
+      actorFor(librarian)
+    ),
+    /first reservation/
+  );
+
+  // A physical copy is now returned/made available.
+  await BookCopy.findByIdAndUpdate(copy._id, {
+    status: "AVAILABLE",
+  });
+
+  await Book.findByIdAndUpdate(book._id, {
+    availableCopies: 1,
+  });
+
+  // Queue head becomes READY.
+  const ready = await markReservationReadyService(
+    first._id.toString(),
+    actorFor(librarian)
+  );
+
+  assert.equal(ready.status, "READY");
+  assert.equal(
+    (await BookCopy.findById(copy._id)).status,
+    "RESERVED"
+  );
+
+  // Fulfill the READY reservation.
+  const fulfilled = await fulfillReservationService(
+    first._id.toString(),
+    {
+      issuedBy: librarian._id.toString(),
+      dueAt: new Date(Date.now() + 86_400_000),
+    },
+    actorFor(librarian)
+  );
+
+  assert.equal(fulfilled.reservation.status, "FULFILLED");
+  assert.equal(
+    (await Issue.findById(fulfilled.issue._id)).status,
+    "ISSUED"
+  );
+  assert.equal(
+    (await BookCopy.findById(copy._id)).status,
+    "ISSUED"
+  );
+});
 test("fine payment is transactional and persists paid state", async () => {
   const librarian = await createUser();
   const member = await createMember();
@@ -372,34 +446,226 @@ test("HTTP fine matrix covers calculation, listing, payment, waiver, and deletio
 test("HTTP reservation, reporting, dashboard, and audit matrix covers remaining routes", async () => {
   const admin = await createUser({ role: "LIBRARY_ADMIN" });
   const member = await createMember();
-  const { book, copy } = await createBookWithCopy({ availableCopies: 0 });
+
+  const { book, copy } = await createBookWithCopy({
+    availableCopies: 0,
+  });
+
   const token = tokenFor(admin);
-  const createReservation = async (extra = {}) => (await expectStatus("POST", "/api/v1/reservations", token, 201, {
-    bookId: String(book._id), memberId: String(member._id), ...extra,
-  })).data;
-  const reservation = await createReservation({ notes: "Matrix reservation" });
+
+  const createReservation = async (extra = {}) =>
+    (
+      await expectStatus(
+        "POST",
+        "/api/v1/reservations",
+        token,
+        201,
+        {
+          bookId: String(book._id),
+          memberId: String(member._id),
+          ...extra,
+        }
+      )
+    ).data;
+
+  // ---------------------------------------------------------
+  // Create WAITING reservation because no copy is available.
+  // ---------------------------------------------------------
+  const reservation = await createReservation({
+    notes: "Matrix reservation",
+  });
+
   const reservationId = idOf(reservation);
-  await expectStatus("GET", "/api/v1/reservations?page=1&limit=5&status=WAITING&sort=queuePosition&order=asc", token);
-  await expectStatus("GET", `/api/v1/reservations/book/${book._id}`, token);
-  await expectStatus("GET", `/api/v1/reservations/member/${member._id}`, token);
-  await expectStatus("GET", `/api/v1/reservations/${reservationId}`, token);
-  await expectStatus("PATCH", `/api/v1/reservations/${reservationId}`, token, 200, { notes: "Matrix updated" });
-  await expectStatus("PATCH", `/api/v1/reservations/${reservationId}/ready`, token);
-  await Book.findByIdAndUpdate(book._id, { availableCopies: 1 });
-  await expectStatus("PATCH", `/api/v1/reservations/${reservationId}/fulfill`, token, 200, { dueAt: new Date(Date.now() + 86_400_000).toISOString() });
-  assert.equal((await Reservation.findById(reservationId)).status, "FULFILLED");
-  assert.equal((await BookCopy.findById(copy._id)).status, "ISSUED");
-  await Book.findByIdAndUpdate(book._id, { availableCopies: 0 });
+
+  assert.equal(reservation.status, "WAITING");
+
+  await expectStatus(
+    "GET",
+    "/api/v1/reservations?page=1&limit=5&status=WAITING&sort=queuePosition&order=asc",
+    token
+  );
+
+  await expectStatus(
+    "GET",
+    `/api/v1/reservations/book/${book._id}`,
+    token
+  );
+
+  await expectStatus(
+    "GET",
+    `/api/v1/reservations/member/${member._id}`,
+    token
+  );
+
+  await expectStatus(
+    "GET",
+    `/api/v1/reservations/${reservationId}`,
+    token
+  );
+
+  await expectStatus(
+    "PATCH",
+    `/api/v1/reservations/${reservationId}`,
+    token,
+    200,
+    {
+      notes: "Matrix updated",
+    }
+  );
+
+  // ---------------------------------------------------------
+  // A physical copy becomes available.
+  // ---------------------------------------------------------
+  await BookCopy.findByIdAndUpdate(copy._id, {
+    status: "AVAILABLE",
+  });
+
+  await Book.findByIdAndUpdate(book._id, {
+    availableCopies: 1,
+  });
+
+  // ---------------------------------------------------------
+  // WAITING -> READY
+  // ---------------------------------------------------------
+  const ready = await expectStatus(
+    "PATCH",
+    `/api/v1/reservations/${reservationId}/ready`,
+    token,
+    200
+  );
+
+  assert.equal(ready.success, true);
+
+  const readyReservation = await Reservation.findById(reservationId);
+
+  assert.equal(readyReservation.status, "READY");
+
+  assert.equal(
+    (await BookCopy.findById(copy._id)).status,
+    "RESERVED"
+  );
+
+  // ---------------------------------------------------------
+  // READY -> FULFILLED
+  // ---------------------------------------------------------
+  await expectStatus(
+    "PATCH",
+    `/api/v1/reservations/${reservationId}/fulfill`,
+    token,
+    200,
+    {
+      dueAt: new Date(
+        Date.now() + 86_400_000
+      ).toISOString(),
+    }
+  );
+
+  assert.equal(
+    (await Reservation.findById(reservationId)).status,
+    "FULFILLED"
+  );
+
+  assert.equal(
+    (await BookCopy.findById(copy._id)).status,
+    "ISSUED"
+  );
+
+  // ---------------------------------------------------------
+  // Create another reservation with no available copy.
+  // ---------------------------------------------------------
+  await Book.findByIdAndUpdate(book._id, {
+    availableCopies: 0,
+  });
+
   const cancelled = await createReservation();
-  await expectStatus("PATCH", `/api/v1/reservations/${idOf(cancelled)}/cancel`, token);
-  await expectStatus("DELETE", `/api/v1/reservations/${idOf(cancelled)}`, token);
-  const expired = await createReservation({ expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
-  await Reservation.findByIdAndUpdate(idOf(expired), { expiresAt: new Date(Date.now() - 86_400_000) });
-  await expectStatus("PATCH", `/api/v1/reservations/${idOf(expired)}/expire`, token);
-  await expectStatus("DELETE", `/api/v1/reservations/${idOf(expired)}`, token);
-  for (const path of ["circulation", "books", "members", "fines", "reservations", "summary"]) {
-    await expectStatus("GET", `/api/v1/reports/${path}`, token);
+
+  assert.equal(cancelled.status, "WAITING");
+
+  await expectStatus(
+    "PATCH",
+    `/api/v1/reservations/${idOf(cancelled)}/cancel`,
+    token
+  );
+
+  assert.equal(
+    (await Reservation.findById(idOf(cancelled))).status,
+    "CANCELLED"
+  );
+
+  await expectStatus(
+    "DELETE",
+    `/api/v1/reservations/${idOf(cancelled)}`,
+    token
+  );
+
+  // ---------------------------------------------------------
+  // Expired reservation
+  // ---------------------------------------------------------
+  const expired = await createReservation({
+    expiresAt: new Date(
+      Date.now() + 86_400_000
+    ).toISOString(),
+  });
+
+  await Reservation.findByIdAndUpdate(
+    idOf(expired),
+    {
+      expiresAt: new Date(
+        Date.now() - 86_400_000
+      ),
+    }
+  );
+
+  await expectStatus(
+    "PATCH",
+    `/api/v1/reservations/${idOf(expired)}/expire`,
+    token
+  );
+
+  assert.equal(
+    (await Reservation.findById(idOf(expired))).status,
+    "EXPIRED"
+  );
+
+  await expectStatus(
+    "DELETE",
+    `/api/v1/reservations/${idOf(expired)}`,
+    token
+  );
+
+  // ---------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------
+  for (const path of [
+    "circulation",
+    "books",
+    "members",
+    "fines",
+    "reservations",
+    "summary",
+  ]) {
+    await expectStatus(
+      "GET",
+      `/api/v1/reports/${path}`,
+      token
+    );
   }
-  await expectStatus("GET", "/api/v1/dashboard/summary", token);
-  await expectStatus("GET", "/api/v1/audit-logs?page=1&limit=5&sort=createdAt&order=desc", token);
+
+  // ---------------------------------------------------------
+  // Dashboard
+  // ---------------------------------------------------------
+  await expectStatus(
+    "GET",
+    "/api/v1/dashboard/summary",
+    token
+  );
+
+  // ---------------------------------------------------------
+  // Audit logs
+  // ---------------------------------------------------------
+  await expectStatus(
+    "GET",
+    "/api/v1/audit-logs?page=1&limit=5&sort=createdAt&order=desc",
+    token
+  );
 });

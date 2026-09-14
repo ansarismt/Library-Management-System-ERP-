@@ -3,8 +3,14 @@ import Reservation, {
   ReservationStatus,
 } from "../models/Reservation.js";
 import { Types } from "mongoose";
-import { PaginatedResult, PaginationQuery } from "../types/pagination.js";
-import { createPaginationMetadata, getPaginationOptions } from "../utils/pagination.js";
+import {
+  PaginatedResult,
+  PaginationQuery,
+} from "../types/pagination.js";
+import {
+  createPaginationMetadata,
+  getPaginationOptions,
+} from "../utils/pagination.js";
 import { escapeRegex } from "../utils/search.js";
 
 export interface CreateReservationData {
@@ -30,35 +36,62 @@ export const getReservations = async (
   memberId?: string
 ): Promise<PaginatedResult<IReservation>> => {
   const filters: Record<string, unknown> = {};
+
   if (query.search) {
-    filters.notes = new RegExp(escapeRegex(query.search), "i");
+    filters.notes = new RegExp(
+      escapeRegex(query.search),
+      "i"
+    );
   }
-  if (query.status) filters.status = query.status;
-  if (query.bookId) filters.bookId = new Types.ObjectId(query.bookId);
-  if (query.memberId) filters.memberId = new Types.ObjectId(query.memberId);
-  if (memberId) filters.memberId = new Types.ObjectId(memberId);
+
+  if (query.status) {
+    filters.status = query.status;
+  }
+
+  if (query.bookId) {
+    filters.bookId = new Types.ObjectId(query.bookId);
+  }
+
+  if (query.memberId) {
+    filters.memberId = new Types.ObjectId(query.memberId);
+  }
+
+  if (memberId) {
+    filters.memberId = new Types.ObjectId(memberId);
+  }
+
   if (query.dateFrom || query.dateTo) {
     filters.reservedAt = {
-      ...(query.dateFrom ? { $gte: new Date(query.dateFrom) } : {}),
-      ...(query.dateTo ? { $lte: new Date(query.dateTo) } : {}),
+      ...(query.dateFrom
+        ? { $gte: new Date(query.dateFrom) }
+        : {}),
+      ...(query.dateTo
+        ? { $lte: new Date(query.dateTo) }
+        : {}),
     };
   }
 
-  const { skip, limit, sort } = getPaginationOptions(query);
+  const { skip, limit, sort } =
+    getPaginationOptions(query);
+
   const [items, total] = await Promise.all([
     Reservation.find(filters)
-    .populate("bookId")
-    .populate("memberId")
-    .sort(sort)
-    .skip(skip)
-    .limit(limit)
-    .exec(),
+      .populate("bookId")
+      .populate("memberId")
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .exec(),
+
     Reservation.countDocuments(filters).exec(),
   ]);
 
   return {
     items,
-    pagination: createPaginationMetadata(query, total),
+    pagination: createPaginationMetadata(
+      query,
+      total
+    ),
   };
 };
 
@@ -78,16 +111,26 @@ export const getReservationsByBook = async (
 ): Promise<IReservation[]> => {
   return Reservation.find({
     bookId,
-    status: { $in: ["WAITING", "READY"] },
+    status: {
+      $in: ["WAITING", "READY"],
+    },
   })
     .sort({ reservedAt: 1 })
     .exec();
 };
 
+/**
+ * Get all reservations belonging to a member.
+ *
+ * Populate bookId/memberId so the frontend receives
+ * book title and ISBN instead of only MongoDB ObjectId.
+ */
 export const getReservationsByMember = async (
   memberId: string
 ): Promise<IReservation[]> => {
   return Reservation.find({ memberId })
+    .populate("bookId")
+    .populate("memberId")
     .sort({ reservedAt: -1 })
     .exec();
 };
@@ -99,7 +142,9 @@ export const getActiveReservation = async (
   return Reservation.findOne({
     bookId,
     memberId,
-    status: { $in: ["WAITING", "READY"] },
+    status: {
+      $in: ["WAITING", "READY"],
+    },
   }).exec();
 };
 

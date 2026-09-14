@@ -2,6 +2,7 @@ import mongoose, { Document, Schema } from "mongoose";
 
 export interface IBookCopy extends Document {
   bookId: mongoose.Types.ObjectId;
+  reservationId?: mongoose.Types.ObjectId;
   accessionNumber: string;
   barcode?: string;
   location?: string;
@@ -26,6 +27,24 @@ const bookCopySchema = new Schema<IBookCopy>(
       type: Schema.Types.ObjectId,
       ref: "Book",
       required: true,
+      index: true,
+    },
+
+    /*
+     * Reservation that currently holds this physical copy.
+     *
+     * When a student reserves an available book:
+     *
+     * AVAILABLE
+     *    ↓
+     * RESERVED + reservationId
+     *
+     * This prevents the same physical copy from being
+     * allocated to multiple reservations.
+     */
+    reservationId: {
+      type: Schema.Types.ObjectId,
+      ref: "Reservation",
       index: true,
     },
 
@@ -90,10 +109,33 @@ const bookCopySchema = new Schema<IBookCopy>(
   }
 );
 
+/*
+ * Existing indexes
+ */
+bookCopySchema.index({
+  bookId: 1,
+  status: 1,
+  createdAt: -1,
+});
+
+bookCopySchema.index({
+  status: 1,
+  condition: 1,
+  createdAt: -1,
+});
+
+/*
+ * Reservation lookup index.
+ *
+ * Useful for finding the physical copy held for
+ * a specific reservation during fulfillment.
+ */
+bookCopySchema.index({
+  reservationId: 1,
+  status: 1,
+});
+
 export const BookCopy = mongoose.model<IBookCopy>(
   "BookCopy",
   bookCopySchema
 );
-
-bookCopySchema.index({ bookId: 1, status: 1, createdAt: -1 });
-bookCopySchema.index({ status: 1, condition: 1, createdAt: -1 });

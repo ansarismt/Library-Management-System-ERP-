@@ -1,4 +1,11 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { authApi } from "../api/services";
 import { setAccessToken } from "../api/client";
 import type { Permission, User } from "../types";
@@ -20,7 +27,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Prevent bootstrap/login/logout requests from overwriting
+  // each other's authentication state.
+  const authOperationRef = useRef(0);
+
   useEffect(() => {
+    const operationId = ++authOperationRef.current;
+
     const bootstrapAuth = async () => {
       try {
         const storedToken = sessionStorage.getItem(ACCESS_TOKEN_KEY);
@@ -29,29 +42,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAccessToken(storedToken);
 
           try {
+            // Always get the complete current user from the server.
             const currentUser = await authApi.me();
+
+            if (authOperationRef.current !== operationId) {
+              return;
+            }
+
             setUser(currentUser);
             return;
           } catch {
+            if (authOperationRef.current !== operationId) {
+              return;
+            }
+
             sessionStorage.removeItem(ACCESS_TOKEN_KEY);
             setAccessToken(null);
           }
         }
 
+        // No valid stored token — try refresh using the HTTP-only cookie.
         const response = await authApi.refresh();
         const newToken = response.data.data.accessToken;
+
+        if (authOperationRef.current !== operationId) {
+          return;
+        }
 
         setAccessToken(newToken);
         sessionStorage.setItem(ACCESS_TOKEN_KEY, newToken);
 
+        // Fetch the canonical user after refresh.
         const currentUser = await authApi.me();
+
+        if (authOperationRef.current !== operationId) {
+          return;
+        }
+
         setUser(currentUser);
       } catch {
+        if (authOperationRef.current !== operationId) {
+          return;
+        }
+
         setAccessToken(null);
         sessionStorage.removeItem(ACCESS_TOKEN_KEY);
         setUser(null);
       } finally {
-        setLoading(false);
+        if (authOperationRef.current === operationId) {
+          setLoading(false);
+        }
       }
     };
 
@@ -64,21 +104,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
 
       login: async (email, password) => {
-        const { data } = await authApi.login({ email, password });
-        const accessToken = data.data.accessToken;
+        // Invalidate any currently running bootstrap operation.
+        const operationId = ++authOperationRef.current;
 
-        setAccessToken(accessToken);
-        sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-        setUser(data.data.user);
+        setLoading(true);
+
+        try {
+          const { data } = await authApi.login({ email, password });
+          const accessToken = data.data.accessToken;
+
+          setAccessToken(accessToken);
+          sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+
+          // IMPORTANT:
+          // Get the complete authenticated user from /me instead of
+          // relying only on the login response.
+          const currentUser = await authApi.me();
+
+          // Make sure an older auth operation cannot overwrite this login.
+          if (authOperationRef.current !== operationId) {
+            return;
+          }
+
+          setUser(currentUser);
+        } finally {
+          if (authOperationRef.current === operationId) {
+            setLoading(false);
+          }
+        }
       },
 
       logout: async () => {
+        // Invalidate any pending auth operation.
+        ++authOperationRef.current;
+
         try {
           await authApi.logout();
         } finally {
           setAccessToken(null);
           sessionStorage.removeItem(ACCESS_TOKEN_KEY);
           setUser(null);
+          setLoading(false);
         }
       },
 

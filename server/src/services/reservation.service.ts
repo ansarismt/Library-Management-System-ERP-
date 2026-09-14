@@ -2,7 +2,6 @@ import mongoose from "mongoose";
 import Reservation from "../models/Reservation.js";
 
 import {
-  createReservation,
   getReservations,
   getReservationById,
   getReservationsByBook,
@@ -23,11 +22,14 @@ import {
 
 import {
   getAvailableBookCopyByBookId,
+  reserveBookCopy,
 } from "../repositories/bookCopy.repository.js";
 
 import {
   getIssueById,
 } from "../repositories/issue.repository.js";
+
+import { notifyMemberEvent } from "./notification.service.js";
 
 /* =========================================================
    TYPES
@@ -63,6 +65,10 @@ const RESERVATION_ADMIN_ROLES = new Set<Role>([
   ROLES.ASSISTANT_LIBRARIAN,
 ]);
 
+/* =========================================================
+   AUTHORIZATION
+========================================================= */
+
 export class ReservationAuthorizationError extends Error {
   readonly statusCode = 403;
 
@@ -74,7 +80,9 @@ export class ReservationAuthorizationError extends Error {
 
 const isReservationAdministrator = (
   actor: ReservationActor
-): boolean => RESERVATION_ADMIN_ROLES.has(actor.role);
+): boolean => {
+  return RESERVATION_ADMIN_ROLES.has(actor.role);
+};
 
 const getActorMemberId = async (
   actor: ReservationActor
@@ -154,6 +162,89 @@ const getVisibleReservations = async (
 };
 
 /* =========================================================
+   HELPERS
+========================================================= */
+
+const getObjectIdString = (
+  value: unknown
+): string => {
+  if (value instanceof mongoose.Types.ObjectId) {
+    return value.toString();
+  }
+
+  if (
+    value &&
+    typeof value === "object" &&
+    "_id" in value
+  ) {
+    return String(value._id);
+  }
+
+  return String(value);
+};
+
+/**
+ * Releases a physical copy held by a reservation.
+ *
+ * RESERVED
+ *    ↓
+ * AVAILABLE
+ *
+ * Book.availableCopies is increased by one.
+ */
+const releaseReservedCopy = async (
+  reservationId: string,
+  bookId: string,
+  session: mongoose.ClientSession
+): Promise<void> => {
+  const copy = await mongoose
+    .model("BookCopy")
+    .findOneAndUpdate(
+      {
+        reservationId:
+          new mongoose.Types.ObjectId(reservationId),
+        bookId:
+          new mongoose.Types.ObjectId(bookId),
+        status: "RESERVED",
+      },
+      {
+        $set: {
+          status: "AVAILABLE",
+        },
+        $unset: {
+          reservationId: 1,
+        },
+      },
+      {
+        returnDocument: "after",
+        session,
+      }
+    )
+    .exec();
+
+  if (!copy) {
+    return;
+  }
+
+  await Book.findOneAndUpdate(
+    {
+      _id: new mongoose.Types.ObjectId(bookId),
+      $expr: {
+        $lt: ["$availableCopies", "$totalCopies"],
+      },
+    },
+    {
+      $inc: {
+        availableCopies: 1,
+      },
+    },
+    {
+      session,
+    }
+  ).exec();
+};
+
+/* =========================================================
    CREATE RESERVATION
 ========================================================= */
 
@@ -224,19 +315,6 @@ export const createReservationService = async (
   }
 
   /* -------------------------------------------------------
-    CHECK AVAILABLE COPY
-
-     If a copy is currently available, reservation is
-     normally unnecessary.
-  ------------------------------------------------------- */
-
-  if (book.availableCopies > 0) {
-    throw new Error(
-      "Book currently has available copies. Reservation is not required"
-    );
-  }
-
-  /* -------------------------------------------------------
      PREVENT DUPLICATE ACTIVE RESERVATION
   ------------------------------------------------------- */
 
@@ -253,39 +331,258 @@ export const createReservationService = async (
   }
 
   /* -------------------------------------------------------
-     CALCULATE QUEUE POSITION
+     TRANSACTION
   ------------------------------------------------------- */
 
-  const activeReservations =
-    await getReservationsByBook(bookId);
+  const session = await mongoose.startSession();
 
-  const queuePosition =
-    activeReservations.length + 1;
+  let createdReservationId: string | null = null;
+  let becameReady = false;
 
-  /* -------------------------------------------------------
-     CREATE
-  ------------------------------------------------------- */
+  try {
+    session.startTransaction();
 
-  const reservation =
-    await createReservation({
-      bookId,
-      memberId,
-      reservedAt: new Date(),
-      expiresAt,
-      status: "WAITING",
-      queuePosition,
-      notes,
-    });
+    /*
+     * Re-check the book inside the transaction.
+     */
+    const transactionBook =
+      await Book.findById(bookId)
+        .session(session)
+        .exec();
 
-  if (!reservation) {
+    if (!transactionBook) {
+      throw new Error("Book not found");
+    }
+
+    /*
+     * Find one physical AVAILABLE copy.
+     *
+     * If one exists, this reservation becomes READY
+     * immediately and that physical copy is RESERVED.
+     *
+     * If none exists, reservation becomes WAITING.
+     */
+    const availableCopy =
+      await getAvailableBookCopyByBookId(
+        bookId,
+        session
+      );
+
+    if (availableCopy) {
+      /* ===================================================
+         AVAILABLE COPY EXISTS
+
+         Reservation:
+           READY
+
+         Copy:
+           AVAILABLE -> RESERVED
+
+         Book:
+           availableCopies - 1
+      =================================================== */
+
+      const reservationDocs =
+        await Reservation.create(
+          [
+            {
+              bookId:
+                new mongoose.Types.ObjectId(bookId),
+              memberId:
+                new mongoose.Types.ObjectId(memberId),
+              reservedAt: new Date(),
+              expiresAt,
+              status: "READY",
+              queuePosition: 1,
+              notes,
+            },
+          ],
+          {
+            session,
+          }
+        );
+
+      const reservation =
+        reservationDocs[0];
+
+      if (!reservation) {
+        throw new Error(
+          "Failed to create reservation"
+        );
+      }
+
+      createdReservationId =
+        reservation._id.toString();
+
+      /*
+       * Atomically reserve the physical copy.
+       */
+      const reservedCopy =
+  await reserveBookCopy(
+    availableCopy._id.toString(),
+    reservation._id.toString(),
+    session
+  );
+
+      if (!reservedCopy) {
+        throw new Error(
+          "The selected book copy is no longer available"
+        );
+      }
+
+      /*
+       * Decrease availableCopies because this copy
+       * is now held by the reservation.
+       */
+      const updatedBook =
+        await Book.findOneAndUpdate(
+          {
+            _id:
+              new mongoose.Types.ObjectId(bookId),
+            availableCopies: {
+              $gt: 0,
+            },
+          },
+          {
+            $inc: {
+              availableCopies: -1,
+            },
+          },
+          {
+            returnDocument: "after",
+            session,
+          }
+        ).exec();
+
+      if (!updatedBook) {
+        throw new Error(
+          "Failed to update book availability"
+        );
+      }
+
+      becameReady = true;
+    } else {
+      /* ===================================================
+         NO AVAILABLE COPY
+
+         Reservation:
+           WAITING
+
+         Copy:
+           none reserved
+
+         Book:
+           unchanged
+      =================================================== */
+
+      const activeReservations =
+        await getReservationsByBook(bookId);
+
+      /*
+       * Only active queue entries should determine
+       * the next waiting position.
+       */
+      const activeQueue =
+        activeReservations.filter(
+          (reservation) =>
+            ["WAITING", "READY"].includes(
+              reservation.status
+            )
+        );
+
+      const queuePosition =
+        activeQueue.length + 1;
+
+      const reservationDocs =
+        await Reservation.create(
+          [
+            {
+              bookId:
+                new mongoose.Types.ObjectId(bookId),
+              memberId:
+                new mongoose.Types.ObjectId(memberId),
+              reservedAt: new Date(),
+              expiresAt,
+              status: "WAITING",
+              queuePosition,
+              notes,
+            },
+          ],
+          {
+            session,
+          }
+        );
+
+      const reservation =
+        reservationDocs[0];
+
+      if (!reservation) {
+        throw new Error(
+          "Failed to create reservation"
+        );
+      }
+
+      createdReservationId =
+        reservation._id.toString();
+    }
+
+    await session.commitTransaction();
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    await session.endSession();
+  }
+
+  if (!createdReservationId) {
     throw new Error(
       "Failed to create reservation"
     );
   }
 
-  return getReservationById(
-    reservation._id.toString()
-  );
+  const createdReservation =
+    await getReservationById(
+      createdReservationId
+    );
+
+  if (!createdReservation) {
+    throw new Error(
+      "Failed to load created reservation"
+    );
+  }
+
+  /* -------------------------------------------------------
+     NOTIFICATION
+  ------------------------------------------------------- */
+
+  const reservationMemberId =
+    getReservationMemberId(
+      createdReservation.memberId
+    );
+
+  const reservationBookTitle =
+    typeof createdReservation.bookId === "object" &&
+    createdReservation.bookId !== null &&
+    "title" in createdReservation.bookId
+      ? (
+          createdReservation.bookId as unknown as {
+            title?: string;
+          }
+        ).title ?? "book"
+      : "book";
+
+  if (becameReady) {
+    await notifyMemberEvent(
+      reservationMemberId,
+      "RESERVATION_READY",
+      "Reservation ready",
+      `Your reserved book "${reservationBookTitle}" is ready for pickup.`,
+      "RESERVATION",
+      createdReservation._id.toString()
+    );
+  }
+
+  return createdReservation;
 };
 
 /* =========================================================
@@ -297,7 +594,10 @@ export const listReservationsService =
     actor: ReservationActor,
     query: import("../types/pagination.js").PaginationQuery
   ) => {
-    return getVisibleReservations(actor, query);
+    return getVisibleReservations(
+      actor,
+      query
+    );
   };
 
 /* =========================================================
@@ -328,7 +628,9 @@ export const getReservationService =
 
     await assertMemberAccess(
       actor,
-      getReservationMemberId(reservation.memberId)
+      getReservationMemberId(
+        reservation.memberId
+      )
     );
 
     return reservation;
@@ -362,18 +664,25 @@ export const listBookReservationsService =
       );
     }
 
-    const reservations = await getReservationsByBook(bookId);
+    const reservations =
+      await getReservationsByBook(
+        bookId
+      );
 
-    if (isReservationAdministrator(actor)) {
+    if (
+      isReservationAdministrator(actor)
+    ) {
       return reservations;
     }
 
-    const actorMemberId = await getActorMemberId(actor);
+    const actorMemberId =
+      await getActorMemberId(actor);
 
     return reservations.filter(
       (reservation) =>
-        getReservationMemberId(reservation.memberId) ===
-        actorMemberId
+        getReservationMemberId(
+          reservation.memberId
+        ) === actorMemberId
     );
   };
 
@@ -396,7 +705,10 @@ export const listMemberReservationsService =
       );
     }
 
-    await assertMemberAccess(actor, memberId);
+    await assertMemberAccess(
+      actor,
+      memberId
+    );
 
     const member =
       await Member.findById(memberId);
@@ -429,10 +741,10 @@ export const cancelReservationService =
       );
     }
 
-    const reservation =
+    const existing =
       await getReservationById(id);
 
-    if (!reservation) {
+    if (!existing) {
       throw new Error(
         "Reservation not found"
       );
@@ -440,222 +752,546 @@ export const cancelReservationService =
 
     await assertMemberAccess(
       actor,
-      getReservationMemberId(reservation.memberId)
+      getReservationMemberId(
+        existing.memberId
+      )
     );
 
     if (
       !["WAITING", "READY"].includes(
-        reservation.status
+        existing.status
       )
     ) {
       throw new Error(
-        `Reservation cannot be cancelled because status is ${reservation.status}`
+        `Reservation cannot be cancelled because status is ${existing.status}`
       );
     }
 
-    const updated = await updateReservation(id, {
-  status: "CANCELLED",
-  cancelledAt: new Date(),
-});
+    const bookId =
+      getObjectIdString(
+        existing.bookId
+      );
 
-if (!updated) throw new Error("Failed to cancel reservation");
+    const session =
+      await mongoose.startSession();
 
-const bookId =
-  reservation.bookId instanceof mongoose.Types.ObjectId
-    ? reservation.bookId.toString()
-    : (reservation.bookId as any)._id.toString();
+    try {
+      session.startTransaction();
 
-const remaining = await getReservationsByBook(bookId);
+      const reservation =
+        await Reservation.findOne({
+          _id:
+            new mongoose.Types.ObjectId(id),
+          status: {
+            $in: ["WAITING", "READY"],
+          },
+        })
+          .session(session)
+          .exec();
 
-for (let index = 0; index < remaining.length; index++) {
-  await updateReservation(remaining[index]._id.toString(), {
-    queuePosition: index + 1,
-  });
-}
+      if (!reservation) {
+        throw new Error(
+          "Reservation is no longer active"
+        );
+      }
 
-return getReservationById(id);
+      /*
+       * If this reservation is READY, release the
+       * physical copy it was holding.
+       */
+      if (reservation.status === "READY") {
+        await releaseReservedCopy(
+          id,
+          bookId,
+          session
+        );
+      }
+
+      const updated =
+        await Reservation.findOneAndUpdate(
+          {
+            _id:
+              new mongoose.Types.ObjectId(id),
+            status: {
+              $in: ["WAITING", "READY"],
+            },
+          },
+          {
+            $set: {
+              status: "CANCELLED",
+              cancelledAt: new Date(),
+            },
+          },
+          {
+            returnDocument: "after",
+            runValidators: true,
+            session,
+          }
+        ).exec();
+
+      if (!updated) {
+        throw new Error(
+          "Failed to cancel reservation"
+        );
+      }
+
+      await session.commitTransaction();
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+
+    /*
+     * Recalculate active queue positions.
+     */
+    const remaining =
+      await getReservationsByBook(
+        bookId
+      );
+
+    const activeRemaining =
+      remaining.filter(
+        (reservation) =>
+          ["WAITING", "READY"].includes(
+            reservation.status
+          )
+      );
+
+    for (
+      let index = 0;
+      index < activeRemaining.length;
+      index++
+    ) {
+      await updateReservation(
+        activeRemaining[index]._id.toString(),
+        {
+          queuePosition: index + 1,
+        }
+      );
+    }
+
+    const cancelledReservation =
+      await getReservationById(id);
+
+    if (cancelledReservation) {
+      await notifyMemberEvent(
+        getReservationMemberId(
+          cancelledReservation.memberId
+        ),
+        "RESERVATION_CANCELLED",
+        "Reservation cancelled",
+        "Your reservation has been cancelled.",
+        "RESERVATION",
+        cancelledReservation._id.toString()
+      );
+    }
+
+    return cancelledReservation;
   };
 
 /* =========================================================
    MARK RESERVATION READY
 ========================================================= */
 
-export const markReservationReadyService = async (
-  id: string,
-  actor: ReservationActor
-) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new Error("Invalid reservation ID");
-  }
+export const markReservationReadyService =
+  async (
+    id: string,
+    actor: ReservationActor
+  ) => {
+    if (
+      !mongoose.Types.ObjectId.isValid(id)
+    ) {
+      throw new Error(
+        "Invalid reservation ID"
+      );
+    }
 
-  const reservation = await getReservationById(id);
+    const authorizationReservation =
+      await getReservationById(id);
 
-  if (!reservation) {
-    throw new Error("Reservation not found");
-  }
+    if (!authorizationReservation) {
+      throw new Error(
+        "Reservation not found"
+      );
+    }
 
-  await assertMemberAccess(
-    actor,
-    getReservationMemberId(reservation.memberId)
-  );
-
-  if (reservation.status !== "WAITING") {
-    throw new Error(
-      `Only waiting reservations can be marked ready. Current status: ${reservation.status}`
+    await assertMemberAccess(
+      actor,
+      getReservationMemberId(
+        authorizationReservation.memberId
+      )
     );
-  }
 
-  const bookId =
-    reservation.bookId instanceof mongoose.Types.ObjectId
-      ? reservation.bookId.toString()
-      : (reservation.bookId as any)._id.toString();
+    if (
+      authorizationReservation.status !==
+      "WAITING"
+    ) {
+      throw new Error(
+        `Only waiting reservations can be marked ready. Current status: ${authorizationReservation.status}`
+      );
+    }
 
-  const activeReservations = await getReservationsByBook(bookId);
+    const bookId =
+      getObjectIdString(
+        authorizationReservation.bookId
+      );
 
-  if (activeReservations.length === 0) {
-    throw new Error("No active reservation found");
-  }
+    const activeReservations =
+      await getReservationsByBook(
+        bookId
+      );
 
-  const firstReservation = activeReservations[0];
+    const activeQueue =
+      activeReservations.filter(
+        (reservation) =>
+          ["WAITING", "READY"].includes(
+            reservation.status
+          )
+      );
 
-  if (firstReservation._id.toString() !== reservation._id.toString()) {
-    throw new Error(
-      "Only the first reservation in the queue can be marked ready"
-    );
-  }
+    if (activeQueue.length === 0) {
+      throw new Error(
+        "No active reservation found"
+      );
+    }
 
-  const updated = await updateReservation(id, {
-    status: "READY",
-  });
+    const firstReservation =
+      activeQueue[0];
 
-  if (!updated) {
-    throw new Error("Failed to mark reservation ready");
-  }
+    if (
+      firstReservation._id.toString() !==
+      authorizationReservation._id.toString()
+    ) {
+      throw new Error(
+        "Only the first reservation in the queue can be marked ready"
+      );
+    }
 
-  return getReservationById(id);
-};
+    const session =
+      await mongoose.startSession();
+
+    try {
+      session.startTransaction();
+
+      /*
+       * Find an available physical copy.
+       */
+      const availableCopy =
+        await getAvailableBookCopyByBookId(
+          bookId,
+          session
+        );
+
+      if (!availableCopy) {
+        throw new Error(
+          "No available book copy is currently available"
+        );
+      }
+
+      /*
+       * Reserve the physical copy.
+       */
+      const reservedCopy =
+        await reserveBookCopy(
+          availableCopy._id.toString(),
+          id,
+          session
+        );
+
+      if (!reservedCopy) {
+        throw new Error(
+          "The book copy is no longer available"
+        );
+      }
+
+      /*
+       * Decrease book availability.
+       */
+      const updatedBook =
+        await Book.findOneAndUpdate(
+          {
+            _id:
+              new mongoose.Types.ObjectId(bookId),
+            availableCopies: {
+              $gt: 0,
+            },
+          },
+          {
+            $inc: {
+              availableCopies: -1,
+            },
+          },
+          {
+            returnDocument: "after",
+            session,
+          }
+        ).exec();
+
+      if (!updatedBook) {
+        throw new Error(
+          "Failed to update book availability"
+        );
+      }
+
+      /*
+       * WAITING -> READY
+       */
+      const updated =
+        await Reservation.findOneAndUpdate(
+          {
+            _id:
+              new mongoose.Types.ObjectId(id),
+            status: "WAITING",
+          },
+          {
+            $set: {
+              status: "READY",
+            },
+          },
+          {
+            returnDocument: "after",
+            runValidators: true,
+            session,
+          }
+        ).exec();
+
+      if (!updated) {
+        throw new Error(
+          "Failed to mark reservation ready"
+        );
+      }
+
+      await session.commitTransaction();
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+
+    const readyReservation =
+      await getReservationById(id);
+
+    if (readyReservation) {
+      const title =
+        typeof readyReservation.bookId ===
+          "object" &&
+        readyReservation.bookId !== null &&
+        "title" in readyReservation.bookId
+          ? (
+              readyReservation.bookId as unknown as {
+                title?: string;
+              }
+            ).title ?? "book"
+          : "book";
+
+      await notifyMemberEvent(
+        getReservationMemberId(
+          readyReservation.memberId
+        ),
+        "RESERVATION_READY",
+        "Reservation ready",
+        `Your reserved book "${title}" is ready for pickup.`,
+        "RESERVATION",
+        readyReservation._id.toString()
+      );
+    }
+
+    return readyReservation;
+  };
 
 /* =========================================================
    FULFILL RESERVATION
 ========================================================= */
 
-export const fulfillReservationService = async (
-  id: string,
-  data: FulfillReservationServiceData,
-  actor: ReservationActor
-) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new Error("Invalid reservation ID");
-  }
-
-  if (!mongoose.Types.ObjectId.isValid(data.issuedBy)) {
-    throw new Error("Invalid issuedBy user ID");
-  }
-
-  const authorizationReservation = await getReservationById(id);
-
-  if (!authorizationReservation) {
-    throw new Error("Reservation not found");
-  }
-
-  await assertMemberAccess(
-    actor,
-    getReservationMemberId(authorizationReservation.memberId)
-  );
-
-  const session = await mongoose.startSession();
-
-  try {
-    session.startTransaction();
-
-    const reservation = await getReservationById(id, session);
-
-    if (!reservation) {
-      throw new Error("Reservation not found");
-    }
-
-    if (reservation.status !== "READY") {
+export const fulfillReservationService =
+  async (
+    id: string,
+    data: FulfillReservationServiceData,
+    actor: ReservationActor
+  ) => {
+    if (
+      !mongoose.Types.ObjectId.isValid(id)
+    ) {
       throw new Error(
-        `Only READY reservations can be fulfilled. Current status: ${reservation.status}`
+        "Invalid reservation ID"
       );
     }
 
-  const bookId =
-    reservation.bookId instanceof mongoose.Types.ObjectId
-      ? reservation.bookId.toString()
-      : (reservation.bookId as any)._id.toString();
-
-  const memberId =
-    reservation.memberId instanceof mongoose.Types.ObjectId
-      ? reservation.memberId.toString()
-      : (reservation.memberId as any)._id.toString();
-
-    const availableCopy =
-      await getAvailableBookCopyByBookId(bookId, session);
-
-  if (!availableCopy) {
-    throw new Error(
-      "No available book copy is currently available for this reservation"
-    );
-  }
-
-    const issue = await issueBookService(
-      {
-        bookId,
-        bookCopyId: availableCopy._id.toString(),
-        memberId,
-        issuedBy: data.issuedBy,
-        dueAt: data.dueAt,
-        notes: data.notes,
-      },
-      session
-    );
-
-    const updatedReservation =
-      await Reservation.findOneAndUpdate(
-        {
-          _id: id,
-          status: "READY",
-        },
-        {
-          status: "FULFILLED",
-          fulfilledAt: new Date(),
-        },
-        {
-          returnDocument: "after",
-          runValidators: true,
-          session,
-        }
-      ).exec();
-
-    if (!updatedReservation) {
+    if (
+      !mongoose.Types.ObjectId.isValid(
+        data.issuedBy
+      )
+    ) {
       throw new Error(
-        "Failed to fulfill reservation"
+        "Invalid issuedBy user ID"
       );
     }
 
-    if (!issue) {
-      throw new Error("Failed to create issue");
-    }
-
-    await session.commitTransaction();
-
-    const populatedReservation =
+    const authorizationReservation =
       await getReservationById(id);
-    const populatedIssue =
-      await getIssueById(issue._id.toString());
 
-    return {
-      reservation: populatedReservation,
-      issue: populatedIssue,
-    };
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    await session.endSession();
-  }
-};
+    if (!authorizationReservation) {
+      throw new Error(
+        "Reservation not found"
+      );
+    }
+
+    await assertMemberAccess(
+      actor,
+      getReservationMemberId(
+        authorizationReservation.memberId
+      )
+    );
+
+    const session =
+      await mongoose.startSession();
+
+    try {
+      session.startTransaction();
+
+      const reservation =
+        await Reservation.findById(id)
+          .session(session)
+          .exec();
+
+      if (!reservation) {
+        throw new Error(
+          "Reservation not found"
+        );
+      }
+
+      if (reservation.status !== "READY") {
+        throw new Error(
+          `Only READY reservations can be fulfilled. Current status: ${reservation.status}`
+        );
+      }
+
+      const bookId =
+        getObjectIdString(
+          reservation.bookId
+        );
+
+      const memberId =
+        getObjectIdString(
+          reservation.memberId
+        );
+
+      /*
+       * IMPORTANT:
+       *
+       * The physical copy is RESERVED by this
+       * reservation.
+       *
+       * We intentionally do NOT call
+       * getAvailableBookCopyByBookId().
+       *
+       * Step 4 will update issue.service.ts so
+       * issueBookService can convert:
+       *
+       * RESERVED -> ISSUED
+       */
+      const BookCopyModel =
+        mongoose.model("BookCopy");
+
+      const reservedCopy =
+        await BookCopyModel.findOne({
+          reservationId:
+            reservation._id,
+          bookId:
+            new mongoose.Types.ObjectId(bookId),
+          status: "RESERVED",
+        })
+          .session(session)
+          .exec();
+
+      if (!reservedCopy) {
+        throw new Error(
+          "No physical book copy is reserved for this reservation"
+        );
+      }
+
+      const issue =
+        await issueBookService(
+          {
+            bookId,
+            bookCopyId:
+              reservedCopy._id.toString(),
+            memberId,
+            issuedBy: data.issuedBy,
+            dueAt: data.dueAt,
+            notes: data.notes,
+          },
+          session
+        );
+
+      if (!issue) {
+        throw new Error(
+          "Failed to create issue"
+        );
+      }
+
+      const updatedReservation =
+        await Reservation.findOneAndUpdate(
+          {
+            _id:
+              new mongoose.Types.ObjectId(id),
+            status: "READY",
+          },
+          {
+            $set: {
+              status: "FULFILLED",
+              fulfilledAt: new Date(),
+            },
+          },
+          {
+            returnDocument: "after",
+            runValidators: true,
+            session,
+          }
+        ).exec();
+
+      if (!updatedReservation) {
+        throw new Error(
+          "Failed to fulfill reservation"
+        );
+      }
+
+      await session.commitTransaction();
+
+      const populatedReservation =
+        await getReservationById(id);
+
+      const populatedIssue =
+        await getIssueById(
+          issue._id.toString()
+        );
+
+      if (populatedReservation) {
+        await notifyMemberEvent(
+          memberId,
+          "RESERVATION_FULFILLED",
+          "Reservation fulfilled",
+          "Your reserved book has been issued to you.",
+          "RESERVATION",
+          populatedReservation._id.toString()
+        );
+      }
+
+      return {
+        reservation:
+          populatedReservation,
+        issue: populatedIssue,
+      };
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+  };
 
 /* =========================================================
    EXPIRE RESERVATION
@@ -685,7 +1321,9 @@ export const expireReservationService =
 
     await assertMemberAccess(
       actor,
-      getReservationMemberId(reservation.memberId)
+      getReservationMemberId(
+        reservation.memberId
+      )
     );
 
     if (
@@ -707,21 +1345,105 @@ export const expireReservationService =
       );
     }
 
-    const updated =
-      await updateReservation(
-        id,
-        {
-          status: "EXPIRED",
-        }
+    const bookId =
+      getObjectIdString(
+        reservation.bookId
       );
 
-    if (!updated) {
-      throw new Error(
-        "Failed to expire reservation"
+    const session =
+      await mongoose.startSession();
+
+    try {
+      session.startTransaction();
+
+      const currentReservation =
+        await Reservation.findById(id)
+          .session(session)
+          .exec();
+
+      if (!currentReservation) {
+        throw new Error(
+          "Reservation not found"
+        );
+      }
+
+      if (
+        !["WAITING", "READY"].includes(
+          currentReservation.status
+        )
+      ) {
+        throw new Error(
+          `Reservation cannot be expired because status is ${currentReservation.status}`
+        );
+      }
+
+      /*
+       * READY reservation owns a physical copy.
+       * Release it before expiring.
+       */
+      if (
+        currentReservation.status ===
+        "READY"
+      ) {
+        await releaseReservedCopy(
+          id,
+          bookId,
+          session
+        );
+      }
+
+      const updated =
+        await Reservation.findOneAndUpdate(
+          {
+            _id:
+              new mongoose.Types.ObjectId(id),
+            status: {
+              $in: ["WAITING", "READY"],
+            },
+          },
+          {
+            $set: {
+              status: "EXPIRED",
+            },
+          },
+          {
+            returnDocument: "after",
+            runValidators: true,
+            session,
+          }
+        ).exec();
+
+      if (!updated) {
+        throw new Error(
+          "Failed to expire reservation"
+        );
+      }
+
+      await session.commitTransaction();
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+
+    const expiredReservation =
+      await getReservationById(id);
+
+    if (expiredReservation) {
+      await notifyMemberEvent(
+        getReservationMemberId(
+          expiredReservation.memberId
+        ),
+        "RESERVATION_EXPIRED",
+        "Reservation expired",
+        "Your reservation has expired.",
+        "RESERVATION",
+        expiredReservation._id.toString()
       );
     }
 
-    return getReservationById(id);
+    return expiredReservation;
   };
 
 /* =========================================================
@@ -753,7 +1475,9 @@ export const updateReservationService =
 
     await assertMemberAccess(
       actor,
-      getReservationMemberId(existing.memberId)
+      getReservationMemberId(
+        existing.memberId
+      )
     );
 
     if (data.expiresAt !== undefined) {
@@ -769,9 +1493,11 @@ export const updateReservationService =
     }
 
     if (
-      ["FULFILLED", "CANCELLED", "EXPIRED"].includes(
-        existing.status
-      )
+      [
+        "FULFILLED",
+        "CANCELLED",
+        "EXPIRED",
+      ].includes(existing.status)
     ) {
       throw new Error(
         `Reservation cannot be updated because status is ${existing.status}`
@@ -821,7 +1547,9 @@ export const deleteReservationService =
 
     await assertMemberAccess(
       actor,
-      getReservationMemberId(reservation.memberId)
+      getReservationMemberId(
+        reservation.memberId
+      )
     );
 
     if (
