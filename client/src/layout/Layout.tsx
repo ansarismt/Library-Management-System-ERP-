@@ -92,11 +92,11 @@ const items: {
   },
 
   {
-    to: "/audit",
-    label: "Audit & Settings",
-    icon: ShieldCheck,
-    permission: "AUDIT_LOG_VIEW",
-  },
+  to: "/audit",
+  label: "Audit Logs",
+  icon: ShieldCheck,
+  permission: "AUDIT_LOG_VIEW",
+},
 ];
 
 const staffRoles = [

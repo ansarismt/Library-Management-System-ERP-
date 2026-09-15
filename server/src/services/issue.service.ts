@@ -3,7 +3,7 @@ import { calculateFineService } from "./fine.service.js";
 
 import {
   createIssue,
-   getIssues,
+  getIssues,
   getIssueById,
   getIssuesByMemberId,
   getActiveIssuesByMemberId,
@@ -19,8 +19,7 @@ import { Book } from "../models/Book.js";
 import { BookCopy } from "../models/BookCopy.js";
 import { Member } from "../models/Member.js";
 import { notifyMemberEvent } from "./notification.service.js";
-
-const MAX_RENEWALS = 2;
+import { getSettings } from "../repositories/settings.repository.js";
 
 /* =========================================================
    TYPES
@@ -31,7 +30,7 @@ export interface IssueBookData {
   bookCopyId: string;
   memberId: string;
   issuedBy: string;
-  dueAt: Date;
+  dueAt?: Date;
   notes?: string;
 }
 
@@ -47,16 +46,11 @@ export interface RenewBookData {
 
 /* =========================================================
    ISSUE BOOK
-   Transaction:
-   1. Create Issue
-   2. Mark BookCopy as ISSUED
-   3. Decrease Book.availableCopies
-   4. Commit
 ========================================================= */
 
 export const issueBookService = async (
   data: IssueBookData,
-  existingSession?: mongoose.ClientSession
+  existingSession?: mongoose.ClientSession,
 ) => {
   const {
     bookId,
@@ -87,17 +81,9 @@ export const issueBookService = async (
     throw new Error("Invalid issuedBy user ID");
   }
 
-  if (!(dueAt instanceof Date) || Number.isNaN(dueAt.getTime())) {
-    throw new Error("Invalid due date");
-  }
-
-  if (dueAt <= new Date()) {
-    throw new Error("Due date must be in the future");
-  }
-
   const session =
     existingSession ??
-    await mongoose.startSession();
+    (await mongoose.startSession());
 
   const ownsSession = !existingSession;
 
@@ -130,18 +116,18 @@ export const issueBookService = async (
 
     if (bookCopy.bookId.toString() !== bookId) {
       throw new Error(
-        "Book copy does not belong to the selected book"
+        "Book copy does not belong to the selected book",
       );
     }
 
     /*
-     * A normal issue uses an AVAILABLE copy.
+     * Normal issue:
+     * AVAILABLE -> ISSUED
      *
-     * A reservation fulfillment uses a RESERVED copy.
-     * RESERVED means the copy was already held for a member,
-     * so availability was already decreased when the
-     * reservation became READY.
+     * Reservation fulfillment:
+     * RESERVED -> ISSUED
      */
+
     const isReservationFulfillment =
       bookCopy.status === "RESERVED";
 
@@ -150,7 +136,7 @@ export const issueBookService = async (
       !isReservationFulfillment
     ) {
       throw new Error(
-        `Book copy is not available. Current status: ${bookCopy.status}`
+        `Book copy is not available. Current status: ${bookCopy.status}`,
       );
     }
 
@@ -167,31 +153,91 @@ export const issueBookService = async (
 
     if (member.status !== "ACTIVE") {
       throw new Error(
-        `Member is not active. Current status: ${member.status}`
+        `Member is not active. Current status: ${member.status}`,
       );
     }
 
     /* -------------------------------------------------------
-       CHECK EXISTING ACTIVE ISSUE
+       LOAD LIBRARY SETTINGS
+    ------------------------------------------------------- */
+
+    const settings = await getSettings();
+
+    const defaultLoanDays =
+      settings.circulation?.defaultLoanDays ?? 14;
+
+    const maxBooksPerMember =
+      settings.circulation?.maxBooksPerMember ?? 5;
+
+    /* -------------------------------------------------------
+       CALCULATE DUE DATE
+    ------------------------------------------------------- */
+
+    const finalDueAt =
+      dueAt ??
+      new Date(
+        Date.now() +
+          defaultLoanDays *
+            24 *
+            60 *
+            60 *
+            1000,
+      );
+
+    if (
+      !(finalDueAt instanceof Date) ||
+      Number.isNaN(finalDueAt.getTime())
+    ) {
+      throw new Error("Invalid due date");
+    }
+
+    if (finalDueAt <= new Date()) {
+      throw new Error(
+        "Due date must be in the future",
+      );
+    }
+
+    /* -------------------------------------------------------
+       CHECK MEMBER ACTIVE ISSUE LIMIT
+    ------------------------------------------------------- */
+
+    /*
+     * Current repository function accepts only memberId.
+     * Do not pass session here.
+     */
+
+    const activeIssues =
+      await getActiveIssuesByMemberId(
+        memberId,
+      );
+
+    if (
+      activeIssues.length >=
+      maxBooksPerMember
+    ) {
+      throw new Error(
+        `Member has reached the maximum limit of ${maxBooksPerMember} active books`,
+      );
+    }
+
+    /* -------------------------------------------------------
+       CHECK EXISTING ACTIVE ISSUE FOR COPY
     ------------------------------------------------------- */
 
     const activeIssue =
       await getActiveIssueByCopyId(
         bookCopyId,
-        session
+        session,
       );
 
     if (activeIssue) {
       throw new Error(
-        "This book copy is already issued"
+        "This book copy is already issued",
       );
     }
 
     /* -------------------------------------------------------
        CHECK BOOK AVAILABILITY
-       Only normal issues need an available copy count.
-       Reservation fulfillment already consumed the
-       availability count when the copy was reserved.
     ------------------------------------------------------- */
 
     if (
@@ -199,7 +245,7 @@ export const issueBookService = async (
       book.availableCopies <= 0
     ) {
       throw new Error(
-        "Book has no available copies"
+        "Book has no available copies",
       );
     }
 
@@ -212,7 +258,7 @@ export const issueBookService = async (
       bookCopyId,
       memberId,
       issuedBy,
-      dueAt,
+      dueAt: finalDueAt,
       status: "ISSUED",
       notes,
     };
@@ -220,25 +266,17 @@ export const issueBookService = async (
     const issue =
       await createIssue(
         issueData,
-        session
+        session,
       );
 
     if (!issue) {
       throw new Error(
-        "Failed to create issue"
+        "Failed to create issue",
       );
     }
 
     /* -------------------------------------------------------
        UPDATE BOOK COPY
-
-       NORMAL:
-       AVAILABLE -> ISSUED
-
-       RESERVATION:
-       RESERVED -> ISSUED
-
-       reservationId is cleared after fulfillment.
     ------------------------------------------------------- */
 
     const copyFilter: Record<string, unknown> = {
@@ -271,36 +309,29 @@ export const issueBookService = async (
           session,
           returnDocument: "after",
           runValidators: true,
-        }
+        },
       );
 
     if (!updatedBookCopy) {
       throw new Error(
         isReservationFulfillment
           ? "Reserved book copy is no longer available for fulfillment"
-          : "Book copy is no longer available"
+          : "Book copy is no longer available",
       );
     }
 
     /* -------------------------------------------------------
        UPDATE BOOK AVAILABILITY
-
-       NORMAL ISSUE:
-       availableCopies - 1
-
-       RESERVATION FULFILLMENT:
-       NO CHANGE
-
-       The copy was already removed from availability
-       when it was changed:
-       AVAILABLE -> RESERVED
     ------------------------------------------------------- */
 
     if (!isReservationFulfillment) {
       const updatedBook =
         await Book.findOneAndUpdate(
           {
-            _id: new mongoose.Types.ObjectId(bookId),
+            _id:
+              new mongoose.Types.ObjectId(
+                bookId,
+              ),
             availableCopies: {
               $gt: 0,
             },
@@ -313,18 +344,18 @@ export const issueBookService = async (
           {
             session,
             returnDocument: "after",
-          }
+          },
         );
 
       if (!updatedBook) {
         throw new Error(
-          "Book has no available copies"
+          "Book has no available copies",
         );
       }
     }
 
     /* -------------------------------------------------------
-       COMMIT TRANSACTION
+       COMMIT
     ------------------------------------------------------- */
 
     if (ownsSession) {
@@ -341,7 +372,7 @@ export const issueBookService = async (
 
     const finalIssue =
       await getIssueById(
-        issue._id.toString()
+        issue._id.toString(),
       );
 
     await notifyMemberEvent(
@@ -350,17 +381,11 @@ export const issueBookService = async (
       "Book issued",
       `"${book.title}" has been issued to you.`,
       "ISSUE",
-      issue._id.toString()
+      issue._id.toString(),
     );
 
     return finalIssue;
-
   } catch (error) {
-
-    /* -------------------------------------------------------
-       ROLLBACK
-    ------------------------------------------------------- */
-
     if (
       ownsSession &&
       session.inTransaction()
@@ -369,13 +394,7 @@ export const issueBookService = async (
     }
 
     throw error;
-
   } finally {
-
-    /* -------------------------------------------------------
-       CLOSE SESSION
-    ------------------------------------------------------- */
-
     if (ownsSession) {
       await session.endSession();
     }
@@ -387,7 +406,7 @@ export const issueBookService = async (
 ========================================================= */
 
 export const listIssuesService = async (
-  query: import("../types/pagination.js").PaginationQuery
+  query: import("../types/pagination.js").PaginationQuery,
 ) => {
   return getIssues(query);
 };
@@ -397,13 +416,14 @@ export const listIssuesService = async (
 ========================================================= */
 
 export const getIssueService = async (
-  id: string
+  id: string,
 ) => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     throw new Error("Invalid issue ID");
   }
 
-  const issue = await getIssueById(id);
+  const issue =
+    await getIssueById(id);
 
   if (!issue) {
     throw new Error("Issue not found");
@@ -411,37 +431,38 @@ export const getIssueService = async (
 
   return issue;
 };
+
 /* =========================================================
    LIST MEMBER ISSUES
 ========================================================= */
 
 export const listMemberIssuesService =
   async (
-    memberId: string
+    memberId: string,
   ) => {
     if (
       !mongoose.Types.ObjectId.isValid(
-        memberId
+        memberId,
       )
     ) {
       throw new Error(
-        "Invalid member ID"
+        "Invalid member ID",
       );
     }
 
     const member =
       await Member.findById(
-        memberId
+        memberId,
       );
 
     if (!member) {
       throw new Error(
-        "Member not found"
+        "Member not found",
       );
     }
 
     return getIssuesByMemberId(
-      memberId
+      memberId,
     );
   };
 
@@ -451,20 +472,20 @@ export const listMemberIssuesService =
 
 export const listActiveMemberIssuesService =
   async (
-    memberId: string
+    memberId: string,
   ) => {
     if (
       !mongoose.Types.ObjectId.isValid(
-        memberId
+        memberId,
       )
     ) {
       throw new Error(
-        "Invalid member ID"
+        "Invalid member ID",
       );
     }
 
     return getActiveIssuesByMemberId(
-      memberId
+      memberId,
     );
   };
 
@@ -472,79 +493,65 @@ export const listActiveMemberIssuesService =
    RETURN BOOK
 ========================================================= */
 
-/* =========================================================
-   RETURN BOOK
-   Transaction:
-   1. Issue -> RETURNED
-   2. BookCopy -> AVAILABLE
-   3. Increase Book.availableCopies
-   4. Calculate/Create Fine
-   5. Commit
-========================================================= */
-
 export const returnBookService =
   async (
     issueId: string,
-    data: ReturnBookData
+    data: ReturnBookData,
   ) => {
-    /* -------------------------------------------------------
-       VALIDATION
-    ------------------------------------------------------- */
-
     if (
       !mongoose.Types.ObjectId.isValid(
-        issueId
+        issueId,
       )
     ) {
       throw new Error(
-        "Invalid issue ID"
+        "Invalid issue ID",
       );
     }
 
     if (
       !mongoose.Types.ObjectId.isValid(
-        data.returnedBy
+        data.returnedBy,
       )
     ) {
       throw new Error(
-        "Invalid returnedBy user ID"
+        "Invalid returnedBy user ID",
       );
     }
 
-    const session = await mongoose.startSession();
+    const session =
+      await mongoose.startSession();
 
     try {
       session.startTransaction();
 
-    /* -------------------------------------------------------
-       GET ISSUE
-    ------------------------------------------------------- */
+      /* -------------------------------------------------------
+         GET ISSUE
+      ------------------------------------------------------- */
 
-    const issue =
-      await getIssueById(
-        issueId,
-        session
-      );
+      const issue =
+        await getIssueById(
+          issueId,
+          session,
+        );
 
-    if (!issue) {
-      throw new Error(
-        "Issue not found"
-      );
-    }
+      if (!issue) {
+        throw new Error(
+          "Issue not found",
+        );
+      }
 
-    if (
-      issue.status !== "ISSUED"
-    ) {
-      throw new Error(
-        `Book cannot be returned because issue status is ${issue.status}`
-      );
-    }
+      if (
+        issue.status !== "ISSUED"
+      ) {
+        throw new Error(
+          `Book cannot be returned because issue status is ${issue.status}`,
+        );
+      }
 
-    const now = new Date();
+      const now = new Date();
 
       /* -------------------------------------------------------
          UPDATE ISSUE
-         ISSUED -> RETURNED
       ------------------------------------------------------- */
 
       const updatedIssue =
@@ -552,65 +559,54 @@ export const returnBookService =
           issueId,
           {
             status: "RETURNED",
-
-            returnedAt:
-              now,
-
+            returnedAt: now,
             returnedBy:
               data.returnedBy,
-
             notes:
               data.notes !== undefined
                 ? data.notes
                 : issue.notes,
           },
           session,
-          "ISSUED"
+          "ISSUED",
         );
 
       if (!updatedIssue) {
         throw new Error(
-          "Failed to return book"
+          "Failed to return book",
         );
       }
 
       /* -------------------------------------------------------
-         MARK PHYSICAL COPY AVAILABLE
-         ISSUED -> AVAILABLE
-
-         Status condition protects against inconsistent state.
+         BOOK COPY -> AVAILABLE
       ------------------------------------------------------- */
 
       const updatedBookCopy =
         await BookCopy.findOneAndUpdate(
           {
-            _id:
-              issue.bookCopyId,
-            status:
-              "ISSUED",
+            _id: issue.bookCopyId,
+            status: "ISSUED",
           },
           {
             $set: {
-              status:
-                "AVAILABLE",
+              status: "AVAILABLE",
             },
           },
           {
             session,
             returnDocument: "after",
             runValidators: true,
-          }
+          },
         );
 
       if (!updatedBookCopy) {
         throw new Error(
-          "Book copy is not currently issued"
+          "Book copy is not currently issued",
         );
       }
 
       /* -------------------------------------------------------
-         INCREASE BOOK AVAILABILITY
-         availableCopies + 1
+         BOOK AVAILABLE COPIES + 1
       ------------------------------------------------------- */
 
       const updatedBook =
@@ -618,31 +614,32 @@ export const returnBookService =
           {
             _id: issue.bookId,
             $expr: {
-              $lt: ["$availableCopies", "$totalCopies"],
+              $lt: [
+                "$availableCopies",
+                "$totalCopies",
+              ],
             },
           },
           {
             $inc: {
-              availableCopies:
-                1,
+              availableCopies: 1,
             },
           },
           {
             session,
             returnDocument: "after",
             runValidators: true,
-          }
+          },
         );
 
       if (!updatedBook) {
         throw new Error(
-          "Failed to update book availability"
+          "Failed to update book availability",
         );
       }
 
       /* -------------------------------------------------------
          CALCULATE / CREATE FINE
-         Uses the SAME transaction session.
       ------------------------------------------------------- */
 
       let fine = null;
@@ -651,7 +648,7 @@ export const returnBookService =
         fine =
           await calculateFineService(
             issueId,
-            session
+            session,
           );
       } catch (error) {
         if (
@@ -666,140 +663,214 @@ export const returnBookService =
       }
 
       /* -------------------------------------------------------
-         COMMIT TRANSACTION
+         COMMIT
       ------------------------------------------------------- */
 
       await session.commitTransaction();
 
       /* -------------------------------------------------------
-         GET FINAL POPULATED ISSUE
-         Outside transaction after successful commit.
+         FINAL ISSUE
       ------------------------------------------------------- */
 
       const finalIssue =
         await getIssueById(
-          issueId
+          issueId,
         );
 
       if (finalIssue) {
-        const bookTitle = typeof finalIssue.bookId === "object" && "title" in finalIssue.bookId ? (finalIssue.bookId as unknown as { title?: string }).title : "Your book";
-        await notifyMemberEvent(issue.memberId.toString(), "BOOK_RETURNED", "Book returned", `\"${bookTitle}\" has been returned successfully.`, "ISSUE", issueId);
+        const bookTitle =
+          typeof finalIssue.bookId ===
+            "object" &&
+          "title" in finalIssue.bookId
+            ? (
+                finalIssue.bookId as unknown as {
+                  title?: string;
+                }
+              ).title
+            : "Your book";
+
+        await notifyMemberEvent(
+          issue.memberId.toString(),
+          "BOOK_RETURNED",
+          "Book returned",
+          `"${bookTitle}" has been returned successfully.`,
+          "ISSUE",
+          issueId,
+        );
       }
-      if (fine) await notifyMemberEvent(issue.memberId.toString(), "FINE_CREATED", "Fine created", `A fine of ${fine.amount} has been added to your account.`, "FINE", fine._id.toString());
+
+      if (fine) {
+        await notifyMemberEvent(
+          issue.memberId.toString(),
+          "FINE_CREATED",
+          "Fine created",
+          `A fine of ${fine.amount} has been added to your account.`,
+          "FINE",
+          fine._id.toString(),
+        );
+      }
 
       return {
-        issue:
-          finalIssue,
+        issue: finalIssue,
         fine,
       };
-
     } catch (error) {
-
-      /* -------------------------------------------------------
-         ROLLBACK
-      ------------------------------------------------------- */
-
-      await session.abortTransaction();
+      if (
+        session.inTransaction()
+      ) {
+        await session.abortTransaction();
+      }
 
       throw error;
-
     } finally {
-
-      /* -------------------------------------------------------
-         CLOSE SESSION
-      ------------------------------------------------------- */
-
       await session.endSession();
     }
   };
+
 /* =========================================================
    RENEW BOOK
 ========================================================= */
 
-export const renewBookService = async (
-  issueId: string,
-  data: RenewBookData
-) => {
-  if (!mongoose.Types.ObjectId.isValid(issueId)) {
-    throw new Error("Invalid issue ID");
-  }
-
-  const session = await mongoose.startSession();
-
-  try {
-    session.startTransaction();
-
-    const issue = await getIssueById(issueId, session);
-
-    if (!issue) {
-      throw new Error("Issue not found");
-    }
-
-    if (issue.status !== "ISSUED") {
-      throw new Error("Only issued books can be renewed");
-    }
-
-    if (issue.renewalCount >= MAX_RENEWALS) {
-      throw new Error(
-        `Maximum renewal limit of ${MAX_RENEWALS} reached`
-      );
-    }
-
-  let newDueAt: Date;
-
-  if (data.dueAt) {
-    newDueAt = new Date(data.dueAt);
-  } else if (data.additionalDays !== undefined) {
+export const renewBookService =
+  async (
+    issueId: string,
+    data: RenewBookData,
+  ) => {
     if (
-      !Number.isInteger(data.additionalDays) ||
-      data.additionalDays <= 0
+      !mongoose.Types.ObjectId.isValid(
+        issueId,
+      )
     ) {
       throw new Error(
-        "additionalDays must be a positive integer"
+        "Invalid issue ID",
       );
     }
 
-    newDueAt = new Date(issue.dueAt);
-    newDueAt.setDate(
-      newDueAt.getDate() + data.additionalDays
-    );
-  } else {
-    throw new Error("Provide additionalDays or dueAt");
-  }
+    const settings =
+      await getSettings();
 
-  if (Number.isNaN(newDueAt.getTime())) {
-    throw new Error("Invalid new due date");
-  }
+    const renewalLimit =
+      settings.circulation?.renewalLimit ??
+      2;
 
-  if (newDueAt <= issue.dueAt) {
-    throw new Error(
-      "New due date must be later than current due date"
-    );
-  }
+    const session =
+      await mongoose.startSession();
 
-    const updatedIssue = await renewIssue(
-      issueId,
-      newDueAt,
-      MAX_RENEWALS,
-      session
-    );
+    try {
+      session.startTransaction();
 
-    if (!updatedIssue) {
-      throw new Error(
-        "Renewal failed. Issue may have already been renewed or maximum renewal limit reached"
+      const issue =
+        await getIssueById(
+          issueId,
+          session,
+        );
+
+      if (!issue) {
+        throw new Error(
+          "Issue not found",
+        );
+      }
+
+      if (
+        issue.status !== "ISSUED"
+      ) {
+        throw new Error(
+          "Only issued books can be renewed",
+        );
+      }
+
+      if (
+        issue.renewalCount >=
+        renewalLimit
+      ) {
+        throw new Error(
+          `Maximum renewal limit of ${renewalLimit} reached`,
+        );
+      }
+
+      let newDueAt: Date;
+
+      if (data.dueAt) {
+        newDueAt =
+          new Date(data.dueAt);
+      } else if (
+        data.additionalDays !==
+        undefined
+      ) {
+        if (
+          !Number.isInteger(
+            data.additionalDays,
+          ) ||
+          data.additionalDays <= 0
+        ) {
+          throw new Error(
+            "additionalDays must be a positive integer",
+          );
+        }
+
+        newDueAt =
+          new Date(issue.dueAt);
+
+        newDueAt.setDate(
+          newDueAt.getDate() +
+            data.additionalDays,
+        );
+      } else {
+        throw new Error(
+          "Provide additionalDays or dueAt",
+        );
+      }
+
+      if (
+        Number.isNaN(
+          newDueAt.getTime(),
+        )
+      ) {
+        throw new Error(
+          "Invalid new due date",
+        );
+      }
+
+      if (
+        newDueAt <= issue.dueAt
+      ) {
+        throw new Error(
+          "New due date must be later than current due date",
+        );
+      }
+
+      const updatedIssue =
+        await renewIssue(
+          issueId,
+          newDueAt,
+          renewalLimit,
+          session,
+        );
+
+      if (!updatedIssue) {
+        throw new Error(
+          "Renewal failed. Issue may have already been renewed or maximum renewal limit reached",
+        );
+      }
+
+      await session.commitTransaction();
+
+      return getIssueById(
+        issueId,
       );
+    } catch (error) {
+      if (
+        session.inTransaction()
+      ) {
+        await session.abortTransaction();
+      }
+
+      throw error;
+    } finally {
+      await session.endSession();
     }
+  };
 
-    await session.commitTransaction();
-
-    return getIssueById(issueId);
-  } catch (error) {
-    if (session.inTransaction()) await session.abortTransaction();
-    throw error;
-  } finally {
-    await session.endSession();
-  }
-};
 /* =========================================================
    UPDATE ISSUE
 ========================================================= */
@@ -807,15 +878,18 @@ export const renewBookService = async (
 export const updateIssueService =
   async (
     id: string,
-    data: Pick<UpdateIssueData, "dueAt" | "notes">
+    data: Pick<
+      UpdateIssueData,
+      "dueAt" | "notes"
+    >,
   ) => {
     if (
       !mongoose.Types.ObjectId.isValid(
-        id
+        id,
       )
     ) {
       throw new Error(
-        "Invalid issue ID"
+        "Invalid issue ID",
       );
     }
 
@@ -824,41 +898,33 @@ export const updateIssueService =
 
     if (!existing) {
       throw new Error(
-        "Issue not found"
+        "Issue not found",
       );
     }
-
-    /* -------------------------------------------------------
-       DUE DATE VALIDATION
-    ------------------------------------------------------- */
 
     if (
       data.dueAt !== undefined
     ) {
       if (
         Number.isNaN(
-          data.dueAt.getTime()
+          data.dueAt.getTime(),
         )
       ) {
         throw new Error(
-          "Invalid due date"
+          "Invalid due date",
         );
       }
     }
 
-    /* -------------------------------------------------------
-       UPDATE
-    ------------------------------------------------------- */
-
     const updated =
       await updateIssue(
         id,
-        data
+        data,
       );
 
     if (!updated) {
       throw new Error(
-        "Failed to update issue"
+        "Failed to update issue",
       );
     }
 
@@ -871,15 +937,15 @@ export const updateIssueService =
 
 export const deleteIssueService =
   async (
-    id: string
+    id: string,
   ) => {
     if (
       !mongoose.Types.ObjectId.isValid(
-        id
+        id,
       )
     ) {
       throw new Error(
-        "Invalid issue ID"
+        "Invalid issue ID",
       );
     }
 
@@ -888,30 +954,24 @@ export const deleteIssueService =
 
     if (!issue) {
       throw new Error(
-        "Issue not found"
+        "Issue not found",
       );
     }
 
-    /* -------------------------------------------------------
-       PROTECT ACTIVE ISSUES
-    ------------------------------------------------------- */
-
-    if (issue.status !== "RETURNED") {
+    if (
+      issue.status !== "RETURNED"
+    ) {
       throw new Error(
-        "Only returned issue records can be deleted"
+        "Only returned issue records can be deleted",
       );
     }
-
-    /* -------------------------------------------------------
-       DELETE
-    ------------------------------------------------------- */
 
     const deleted =
       await deleteIssue(id);
 
     if (!deleted) {
       throw new Error(
-        "Failed to delete issue"
+        "Failed to delete issue",
       );
     }
 

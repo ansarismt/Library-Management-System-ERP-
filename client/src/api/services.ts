@@ -319,3 +319,61 @@ export const notificationsApi = {
   markRead: (id: string) => unwrap<Notification>(api.patch<ApiResponse<Notification>>(`/notifications/${id}/read`)),
   markAllRead: () => unwrap<{ modifiedCount: number }>(api.patch<ApiResponse<{ modifiedCount: number }>>("/notifications/read-all")),
 };
+
+export type LibrarySettings = {
+  key: string;
+
+  library: {
+    libraryName: string;
+    address: string;
+    phone: string;
+    email: string;
+  };
+
+  circulation: {
+    defaultLoanDays: number;
+    maxBooksPerMember: number;
+    renewalLimit: number;
+    finePerDay: number;
+  };
+
+  reservations: {
+    enabled: boolean;
+    holdDays: number;
+  };
+
+  notifications: {
+    dueSoonEnabled: boolean;
+    overdueEnabled: boolean;
+    reservationReadyEnabled: boolean;
+    fineEnabled: boolean;
+  };
+
+  system: {
+    timezone: string;
+  };
+
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type SettingsUpdate = {
+  library?: Partial<LibrarySettings["library"]>;
+  circulation?: Partial<LibrarySettings["circulation"]>;
+  reservations?: Partial<LibrarySettings["reservations"]>;
+  notifications?: Partial<LibrarySettings["notifications"]>;
+  system?: Partial<LibrarySettings["system"]>;
+};
+
+export const settingsApi = {
+  get: () =>
+    api.get<{ success: boolean; data: LibrarySettings }>(
+      "/settings",
+    ),
+
+  update: (updates: SettingsUpdate) =>
+    api.patch<{ success: boolean; data: LibrarySettings }>(
+      "/settings",
+      updates,
+    ),
+};

@@ -24,7 +24,7 @@ import { auditRequest } from "../services/audit.service.js";
 export const issueBookController =
   async (
     req: Request,
-    res: Response
+    res: Response,
   ): Promise<void> => {
     try {
       const {
@@ -39,8 +39,7 @@ export const issueBookController =
       if (!bookId) {
         res.status(400).json({
           success: false,
-          message:
-            "bookId is required",
+          message: "bookId is required",
         });
         return;
       }
@@ -72,29 +71,26 @@ export const issueBookController =
         return;
       }
 
-      if (!dueAt) {
-        res.status(400).json({
-          success: false,
-          message:
-            "dueAt is required",
-        });
-        return;
-      }
+      let parsedDueAt:
+        | Date
+        | undefined;
 
-      const parsedDueAt =
-        new Date(dueAt);
+      if (dueAt !== undefined) {
+        parsedDueAt =
+          new Date(dueAt);
 
-      if (
-        Number.isNaN(
-          parsedDueAt.getTime()
-        )
-      ) {
-        res.status(400).json({
-          success: false,
-          message:
-            "Invalid dueAt date",
-        });
-        return;
+        if (
+          Number.isNaN(
+            parsedDueAt.getTime(),
+          )
+        ) {
+          res.status(400).json({
+            success: false,
+            message:
+              "Invalid dueAt date",
+          });
+          return;
+        }
       }
 
       const issue =
@@ -103,23 +99,32 @@ export const issueBookController =
           bookCopyId,
           memberId,
           issuedBy,
-          dueAt:
-            parsedDueAt,
+          dueAt: parsedDueAt,
           notes,
         });
 
       await auditRequest(req, {
-        action: AUDIT_ACTIONS.ISSUE_CREATED,
+        action:
+          AUDIT_ACTIONS.ISSUE_CREATED,
         resourceType: "ISSUE",
-        resourceId: issue?._id?.toString(),
-        description: "Book issued",
-        after: issue ? {
-          bookId: issue.bookId,
-          bookCopyId: issue.bookCopyId,
-          memberId: issue.memberId,
-          status: issue.status,
-          dueAt: issue.dueAt,
-        } : undefined,
+        resourceId:
+          issue?._id?.toString(),
+        description:
+          "Book issued",
+        after: issue
+          ? {
+              bookId:
+                issue.bookId,
+              bookCopyId:
+                issue.bookCopyId,
+              memberId:
+                issue.memberId,
+              status:
+                issue.status,
+              dueAt:
+                issue.dueAt,
+            }
+          : undefined,
         success: true,
         statusCode: 201,
       });

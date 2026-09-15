@@ -27,8 +27,8 @@ import Users from "./pages/Users";
 import Reports from "./pages/Reports";
 import Audit from "./pages/Audit";
 import Reservations from "./pages/Reservations";
-import Restricted from "./pages/Restricted";
 import Notifications from "./pages/Notifications";
+import Settings from "./pages/Settings";
 
 import "./App.css";
 
@@ -141,14 +141,16 @@ export default function App() {
               />
             </Route>
 
-            <Route
-              path="settings"
-              element={
-                <Restricted
-                  title="Library settings are not exposed by this API revision"
-                />
-              }
-            />
+          <Route
+  element={
+    <PermissionRoute permission="LIBRARY_SETTINGS" />
+  }
+>
+  <Route
+    path="settings"
+    element={<Settings />}
+  />
+</Route>
           </Route>
         </Route>
 
@@ -164,4 +166,6 @@ export default function App() {
       </Routes>
     </AuthProvider>
   );
+
+  
 }
