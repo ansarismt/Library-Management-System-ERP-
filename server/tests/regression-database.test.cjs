@@ -99,6 +99,44 @@ const createBookWithCopy = async ({ availableCopies = 1 } = {}) => {
   return { book, copy };
 };
 
+const createBookWithCopies = async ({ totalCopies = 8 } = {}) => {
+  const unique = new mongoose.Types.ObjectId().toString();
+
+  const book = await Book.create({
+    isbn: `ISBN-${unique}`,
+    title: "Inventory Test Book",
+    authors: ["Test Author"],
+    totalCopies,
+    availableCopies: totalCopies,
+    status: "ACTIVE",
+    category: "Testing",
+  });
+
+  const copies = [];
+  for (let i = 0; i < totalCopies; i++) {
+    copies.push(
+      await BookCopy.create({
+        bookId: book._id,
+        accessionNumber: `ACC-${unique}-${i}`,
+        status: "AVAILABLE",
+        condition: "GOOD",
+      })
+    );
+  }
+
+  return { book, copies };
+};
+
+const issueOneCopy = async ({ book, copies, librarian, member }) =>
+  issueBookService({
+    bookId: book._id.toString(),
+    bookCopyId: copies[0]._id.toString(),
+    memberId: member._id.toString(),
+    issuedBy: librarian._id.toString(),
+    dueAt: new Date(Date.now() + 86_400_000),
+  });
+
+
 const actorFor = (user) => ({ userId: user._id.toString(), role: user.role });
 const tokenFor = (user) => generateAccessToken({ userId: user._id.toString(), role: user.role });
 const idOf = (value) => String(value._id ?? value.id);
@@ -213,6 +251,327 @@ test("a failed issue transaction rolls back issue, copy, and availability", asyn
   assert.equal(await Issue.countDocuments(), 0);
   assert.equal((await BookCopy.findById(copy._id)).status, "AVAILABLE");
   assert.equal((await Book.findById(book._id)).availableCopies, 1);
+});
+
+/* =========================================================
+   INVENTORY CONSISTENCY: ISSUE / RETURN
+   ========================================================= */
+
+test("issue of an available copy decrements book availableCopies (8/8 -> 7/8)", async () => {
+  const librarian = await createUser();
+  const member = await createMember();
+  const { book, copies } = await createBookWithCopies({
+    totalCopies: 8,
+  });
+
+  assert.equal(book.availableCopies, 8);
+  assert.equal(book.totalCopies, 8);
+
+  const issue = await issueOneCopy({
+    book,
+    copies,
+    librarian,
+    member,
+  });
+
+  assert.equal(issue.status, "ISSUED");
+  assert.equal(
+    (await BookCopy.findById(copies[0]._id)).status,
+    "ISSUED"
+  );
+  const bookAfter = await Book.findById(book._id);
+  assert.equal(bookAfter.availableCopies, 7);
+  assert.equal(bookAfter.totalCopies, 8);
+});
+
+test("return of an issued copy restores book availableCopies (7/8 -> 8/8)", async () => {
+  const librarian = await createUser();
+  const member = await createMember();
+  const { book, copies } = await createBookWithCopies({
+    totalCopies: 8,
+  });
+
+  const issue = await issueOneCopy({
+    book,
+    copies,
+    librarian,
+    member,
+  });
+  assert.equal(
+    (await Book.findById(book._id)).availableCopies,
+    7
+  );
+
+  const returned = await returnBookService(issue._id.toString(), {
+    returnedBy: librarian._id.toString(),
+  });
+
+  assert.equal(returned.issue.status, "RETURNED");
+  assert.equal(
+    (await BookCopy.findById(copies[0]._id)).status,
+    "AVAILABLE"
+  );
+  const bookAfter = await Book.findById(book._id);
+  assert.equal(bookAfter.availableCopies, 8);
+  assert.equal(bookAfter.totalCopies, 8);
+});
+
+test("return succeeds and stays consistent when availableCopies equals totalCopies (inconsistent data)", async () => {
+  const librarian = await createUser();
+  const member = await createMember();
+  const { book, copies } = await createBookWithCopies({
+    totalCopies: 8,
+  });
+
+  /*
+   * Create a genuine active issue (7/8 after issue).
+   */
+  const issue = await issueOneCopy({
+    book,
+    copies,
+    librarian,
+    member,
+  });
+  assert.equal(
+    (await Book.findById(book._id)).availableCopies,
+    7
+  );
+
+  /*
+   * Corrupt the counter to mimic the reported bug:
+   * totalCopies = 8, availableCopies = 8, one copy ISSUED,
+   * one Issue ISSUED.
+   */
+  await Book.findByIdAndUpdate(book._id, {
+    availableCopies: 8,
+  });
+  assert.equal(
+    (await Book.findById(book._id)).availableCopies,
+    8
+  );
+
+  const returned = await returnBookService(issue._id.toString(), {
+    returnedBy: librarian._id.toString(),
+  });
+
+  assert.equal(returned.issue.status, "RETURNED");
+  assert.equal(
+    (await BookCopy.findById(copies[0]._id)).status,
+    "AVAILABLE"
+  );
+  const bookAfter = await Book.findById(book._id);
+  assert.equal(bookAfter.availableCopies, 8);
+  assert.equal(bookAfter.totalCopies, 8);
+
+  /*
+   * availableCopies must never exceed totalCopies and must
+   * match the physical count of AVAILABLE copies.
+   */
+  assert.ok(
+    bookAfter.availableCopies <= bookAfter.totalCopies
+  );
+  const physicalAvailable = await BookCopy.countDocuments({
+    bookId: book._id,
+    status: "AVAILABLE",
+  });
+  assert.equal(bookAfter.availableCopies, physicalAvailable);
+});
+
+test("cannot issue the same physical copy twice", async () => {
+  const librarian = await createUser();
+  const firstMember = await createMember();
+  const secondMember = await createMember();
+  const { book, copies } = await createBookWithCopies({
+    totalCopies: 8,
+  });
+
+  const first = await issueOneCopy({
+    book,
+    copies,
+    librarian,
+    member: firstMember,
+  });
+  assert.equal(first.status, "ISSUED");
+  assert.equal(
+    (await Book.findById(book._id)).availableCopies,
+    7
+  );
+
+  await assert.rejects(
+    issueBookService({
+      bookId: book._id.toString(),
+      bookCopyId: copies[0]._id.toString(),
+      memberId: secondMember._id.toString(),
+      issuedBy: librarian._id.toString(),
+      dueAt: new Date(Date.now() + 86_400_000),
+    }),
+    /already issued|not available/i
+  );
+
+  /*
+   * The failed second issue must not have changed inventory.
+   */
+  assert.equal(
+    (await BookCopy.findById(copies[0]._id)).status,
+    "ISSUED"
+  );
+  assert.equal(
+    (await Book.findById(book._id)).availableCopies,
+    7
+  );
+});
+
+test("cannot return a copy that is not currently issued", async () => {
+  const librarian = await createUser();
+  const member = await createMember();
+  const { book, copies } = await createBookWithCopies({
+    totalCopies: 8,
+  });
+
+  /*
+   * No issue exists yet: a random issue id is not found.
+   */
+  await assert.rejects(
+    returnBookService(
+      new mongoose.Types.ObjectId().toString(),
+      { returnedBy: librarian._id.toString() }
+    ),
+    /not found/i
+  );
+
+  /*
+   * Issue then return once (succeeds).
+   */
+  const issue = await issueOneCopy({
+    book,
+    copies,
+    librarian,
+    member,
+  });
+  const returned = await returnBookService(issue._id.toString(), {
+    returnedBy: librarian._id.toString(),
+  });
+  assert.equal(returned.issue.status, "RETURNED");
+  assert.equal(
+    (await BookCopy.findById(copies[0]._id)).status,
+    "AVAILABLE"
+  );
+
+  /*
+   * Double return must fail because the copy is no longer ISSUED
+   * and the issue is no longer ISSUED.
+   */
+  await assert.rejects(
+    returnBookService(issue._id.toString(), {
+      returnedBy: librarian._id.toString(),
+    }),
+    /cannot be returned|not currently issued/i
+  );
+});
+
+test("reservation fulfillment does not double-decrement availability", async () => {
+  const librarian = await createUser();
+  const member = await createMember();
+  const { book, copies } = await createBookWithCopies({
+    totalCopies: 8,
+  });
+
+  /*
+   * A librarian (reservation administrator) creates a reservation
+   * for the member. An available copy is found and RESERVED, so
+   * availableCopies goes 8 -> 7 and the copy -> RESERVED.
+   */
+  const reservation = await createReservationService(
+    {
+      bookId: book._id.toString(),
+      memberId: member._id.toString(),
+    },
+    actorFor(librarian)
+  );
+  assert.equal(reservation.status, "READY");
+
+  const reservedCopies = await BookCopy.find({
+    bookId: book._id,
+    status: "RESERVED",
+  });
+  assert.equal(reservedCopies.length, 1);
+  assert.equal(
+    (await Book.findById(book._id)).availableCopies,
+    7
+  );
+
+  const fulfilled = await fulfillReservationService(
+    reservation._id.toString(),
+    {
+      issuedBy: librarian._id.toString(),
+      dueAt: new Date(Date.now() + 86_400_000),
+    },
+    actorFor(librarian)
+  );
+
+  assert.equal(fulfilled.reservation.status, "FULFILLED");
+  assert.equal(
+    (await BookCopy.findById(fulfilled.issue.bookCopyId)).status,
+    "ISSUED"
+  );
+
+  /*
+   * Reservation fulfillment converts RESERVED -> ISSUED. The
+   * availability was already consumed when the copy was reserved,
+   * so availableCopies must NOT decrement again.
+   */
+  assert.equal(
+    (await Book.findById(book._id)).availableCopies,
+    7
+  );
+});
+
+test("a failed return transaction rolls back issue, copy, and availability", async () => {
+  const librarian = await createUser();
+  const member = await createMember();
+  const { book, copies } = await createBookWithCopies({
+    totalCopies: 8,
+  });
+
+  const issue = await issueOneCopy({
+    book,
+    copies,
+    librarian,
+    member,
+  });
+  assert.equal(
+    (await Book.findById(book._id)).availableCopies,
+    7
+  );
+
+  /*
+   * Force the BookCopy update to fail after the issue has been
+   * updated to RETURNED. The transaction must abort and roll back
+   * the issue update.
+   */
+  const originalUpdate = BookCopy.findOneAndUpdate;
+  BookCopy.findOneAndUpdate = () =>
+    Promise.reject(new Error("simulated return failure"));
+  try {
+    await assert.rejects(
+      returnBookService(issue._id.toString(), {
+        returnedBy: librarian._id.toString(),
+      }),
+      /simulated return failure/
+    );
+  } finally {
+    BookCopy.findOneAndUpdate = originalUpdate;
+  }
+
+  assert.equal((await Issue.findById(issue._id)).status, "ISSUED");
+  assert.equal(
+    (await BookCopy.findById(copies[0]._id)).status,
+    "ISSUED"
+  );
+  assert.equal(
+    (await Book.findById(book._id)).availableCopies,
+    7
+   );
 });
 
 test("reservation queue enforces queue head and fulfillment persists its issue", async () => {

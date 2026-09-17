@@ -29,7 +29,7 @@ import {
   getIssueById,
 } from "../repositories/issue.repository.js";
 
-import { notifyMemberEvent } from "./notification.service.js";
+import { notifyMemberEvent, notifyAdmins } from "./notification.service.js";
 
 /* =========================================================
    TYPES
@@ -88,32 +88,93 @@ const getActorMemberId = async (
   actor: ReservationActor
 ): Promise<string> => {
   const user = await User.findById(actor.userId)
-    .select("memberId")
+    .select("memberId email")
     .lean()
     .exec();
 
-  if (!user?.memberId) {
+  if (!user) {
     throw new ReservationAuthorizationError();
   }
 
-  if (mongoose.Types.ObjectId.isValid(user.memberId)) {
-    return user.memberId;
+  /* =====================================================
+     1. FIRST: MATCH USER EMAIL -> MEMBER EMAIL
+     
+     Email is the most reliable link because the
+     frontend /auth/me also resolves the member using
+     the user's email.
+  ===================================================== */
+
+  if (user.email) {
+    const normalizedEmail =
+      user.email.trim().toLowerCase();
+
+    const memberByEmail =
+      await Member.findOne({
+        email: normalizedEmail,
+      })
+        .select("_id")
+        .lean()
+        .exec();
+
+    if (memberByEmail) {
+      return memberByEmail._id.toString();
+    }
   }
 
-  const member = await Member.findOne({
-    memberId: user.memberId,
-  })
-    .select("_id")
-    .lean()
-    .exec();
+  /* =====================================================
+     2. SECOND: USE USER.memberId
+     
+     Supports both:
+       - MongoDB ObjectId
+       - Library member ID such as MEM001
+  ===================================================== */
 
-  if (!member) {
-    throw new ReservationAuthorizationError();
+  if (user.memberId) {
+    /*
+     * If memberId looks like MongoDB ObjectId,
+     * verify that the Member actually exists.
+     */
+    if (
+      mongoose.Types.ObjectId.isValid(
+        user.memberId
+      )
+    ) {
+      const memberByObjectId =
+        await Member.findById(
+          user.memberId
+        )
+          .select("_id")
+          .lean()
+          .exec();
+
+      if (memberByObjectId) {
+        return memberByObjectId._id.toString();
+      }
+    }
+
+    /*
+     * Otherwise treat it as the library memberId,
+     * for example MEM001.
+     */
+    const memberByMemberId =
+      await Member.findOne({
+        memberId: user.memberId,
+      })
+        .select("_id")
+        .lean()
+        .exec();
+
+    if (memberByMemberId) {
+      return memberByMemberId._id.toString();
+    }
   }
 
-  return member._id.toString();
+  /* =====================================================
+     3. NO MEMBER LINK
+  ===================================================== */
+
+  throw new ReservationAuthorizationError();
 };
-
 const getReservationMemberId = (
   value: unknown
 ): string => {
@@ -582,6 +643,27 @@ export const createReservationService = async (
     );
   }
 
+  // Notify when reservation is created (WAITING or READY)
+  await notifyMemberEvent(
+    reservationMemberId,
+    "RESERVATION_CREATED",
+    "Reservation created",
+    `Your reservation for "${reservationBookTitle}" has been placed.${becameReady ? " It is ready for pickup." : " You will be notified when it becomes available."}`,
+    "RESERVATION",
+    createdReservation._id.toString()
+  );
+
+  // Notify all admins about the new reservation
+  const reserverMember = await Member.findById(reservationMemberId).select("memberId name").exec();
+  const reserverName = reserverMember?.name || "A member";
+  await notifyAdmins(
+    "RESERVATION_CREATED",
+    "New reservation",
+    `${reserverName} reserved the book "${reservationBookTitle}".`,
+    "RESERVATION",
+    createdReservation._id.toString()
+  );
+
   return createdReservation;
 };
 
@@ -886,6 +968,20 @@ export const cancelReservationService =
         "RESERVATION",
         cancelledReservation._id.toString()
       );
+
+      // Notify admins about the cancellation
+      const cancelledMember = await Member.findById(getReservationMemberId(cancelledReservation.memberId)).select("memberId name").exec();
+      const cancelledMemberName = cancelledMember?.name || "A member";
+      const cancelledBookTitle = typeof cancelledReservation.bookId === "object" && cancelledReservation.bookId !== null && "title" in cancelledReservation.bookId
+        ? (cancelledReservation.bookId as unknown as { title?: string }).title ?? "book"
+        : "book";
+      await notifyAdmins(
+        "RESERVATION_CANCELLED",
+        "Reservation cancelled",
+        `${cancelledMemberName} cancelled the reservation for "${cancelledBookTitle}".`,
+        "RESERVATION",
+        cancelledReservation._id.toString()
+      );
     }
 
     return cancelledReservation;
@@ -1097,6 +1193,17 @@ export const markReservationReadyService =
         "RESERVATION",
         readyReservation._id.toString()
       );
+
+      // Notify admins that a reservation is ready for pickup
+      const readyMember = await Member.findById(getReservationMemberId(readyReservation.memberId)).select("memberId name").exec();
+      const readyMemberName = readyMember?.name || "A member";
+      await notifyAdmins(
+        "RESERVATION_READY",
+        "Reservation ready",
+        `${readyMemberName}'s reservation for "${title}" is ready for pickup.`,
+        "RESERVATION",
+        readyReservation._id.toString()
+      );
     }
 
     return readyReservation;
@@ -1278,6 +1385,20 @@ export const fulfillReservationService =
           "RESERVATION",
           populatedReservation._id.toString()
         );
+
+        // Notify admins that the reservation was fulfilled
+        const fulfilledMember = await Member.findById(memberId).select("memberId name").exec();
+        const fulfilledMemberName = fulfilledMember?.name || "A member";
+        const fulfilledBookTitle = typeof populatedReservation.bookId === "object" && populatedReservation.bookId !== null && "title" in populatedReservation.bookId
+          ? (populatedReservation.bookId as unknown as { title?: string }).title ?? "book"
+          : "book";
+        await notifyAdmins(
+          "RESERVATION_FULFILLED",
+          "Reservation fulfilled",
+          `${fulfilledMemberName}'s reservation for "${fulfilledBookTitle}" was fulfilled.`,
+          "RESERVATION",
+          populatedReservation._id.toString()
+        );
       }
 
       return {
@@ -1438,6 +1559,20 @@ export const expireReservationService =
         "RESERVATION_EXPIRED",
         "Reservation expired",
         "Your reservation has expired.",
+        "RESERVATION",
+        expiredReservation._id.toString()
+      );
+
+      // Notify admins about the expired reservation
+      const expiredMember = await Member.findById(getReservationMemberId(expiredReservation.memberId)).select("memberId name").exec();
+      const expiredMemberName = expiredMember?.name || "A member";
+      const expiredBookTitle = typeof expiredReservation.bookId === "object" && expiredReservation.bookId !== null && "title" in expiredReservation.bookId
+        ? (expiredReservation.bookId as unknown as { title?: string }).title ?? "book"
+        : "book";
+      await notifyAdmins(
+        "RESERVATION_EXPIRED",
+        "Reservation expired",
+        `${expiredMemberName}'s reservation for "${expiredBookTitle}" has expired.`,
         "RESERVATION",
         expiredReservation._id.toString()
       );

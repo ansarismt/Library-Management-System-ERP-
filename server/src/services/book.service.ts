@@ -8,11 +8,23 @@ import {
   CreateBookData,
 } from "../repositories/book.repository.js";
 import { PaginatedResult, PaginationQuery } from "../types/pagination.js";
+import { notifyAdmins } from "./notification.service.js";
 
 export const createBook = async (
   data: CreateBookData
 ) => {
-  return createBookRepository(data);
+  const book = await createBookRepository(data);
+
+  // Notify admins about new book
+  await notifyAdmins(
+    "BOOK_CREATED",
+    "New book added",
+    `New book "${data.title}" has been added to the catalog.`,
+    "BOOK",
+    book._id.toString()
+  );
+
+  return book;
 };
 
 export const getBookById = async (
@@ -37,11 +49,38 @@ export const updateBook = async (
   id: string,
   data: Partial<CreateBookData>
 ) => {
-  return updateBookRepository(id, data);
+  const book = await updateBookRepository(id, data);
+  
+  if (book) {
+    await notifyAdmins(
+      "BOOK_UPDATED",
+      "Book updated",
+      `Book "${book.title}" has been updated.`,
+      "BOOK",
+      book._id.toString()
+    );
+  }
+  
+  return book;
 };
 
 export const deleteBook = async (
   id: string
 ) => {
-  return deleteBookRepository(id);
+  const book = await getBookByIdRepository(id);
+  const bookTitle = book?.title || "Unknown book";
+  
+  const result = await deleteBookRepository(id);
+  
+  if (result) {
+    await notifyAdmins(
+      "BOOK_DELETED",
+      "Book deleted",
+      `Book "${bookTitle}" has been removed from the catalog.`,
+      "BOOK",
+      id
+    );
+  }
+  
+  return result;
 };

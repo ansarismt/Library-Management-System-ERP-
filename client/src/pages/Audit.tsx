@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { auditApi } from "../api/services";
 import { Button, Loading, PageHeader } from "../components/ui";
+import { Badge } from "../components/ui";
 
 const formatDate = (value: string) => {
   const date = new Date(value);
@@ -69,31 +70,29 @@ export default function Audit() {
           subtitle="Review security and system activity recorded by the library system."
         />
 
-        <section className="panel">
-          <div className="empty-state">
-            <AlertCircle size={28} />
-            <h2>Unable to load audit logs</h2>
-            <p>
-              The audit endpoint could not be reached or your account does
-              not have permission to view the logs.
-            </p>
+        <section className="panel empty">
+          <AlertCircle size={28} />
+          <h2>Unable to load audit logs</h2>
+          <p>
+            The audit endpoint could not be reached or your account does
+            not have permission to view the logs.
+          </p>
 
-            <Button
-              variant="secondary"
-              onClick={() => query.refetch()}
-            >
-              <RefreshCw size={16} />
-              Try again
-            </Button>
-          </div>
+          <Button
+            variant="secondary"
+            onClick={() => query.refetch()}
+          >
+            <RefreshCw size={16} />
+            Try again
+          </Button>
         </section>
       </>
     );
   }
 
-const apiResponse = query.data;
-const logs = apiResponse.data;
-const pagination = apiResponse.pagination;
+  const apiResponse = query.data;
+  const logs = apiResponse.data;
+  const pagination = apiResponse.pagination;
 
   const applySearch = () => {
     setPage(1);
@@ -194,7 +193,7 @@ const pagination = apiResponse.pagination;
         </div>
 
         {logs.length === 0 ? (
-          <div className="empty-state">
+          <div className="panel empty">
             <AlertCircle size={28} />
             <h2>No audit logs found</h2>
             <p>
@@ -202,99 +201,101 @@ const pagination = apiResponse.pagination;
             </p>
           </div>
         ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Actor</th>
-                  <th>Action</th>
-                  <th>Resource</th>
-                  <th>Description</th>
-                  <th>Result</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {logs.map((log) => (
-                  <tr key={log._id}>
-                    <td>
-                      <span className="nowrap">
-                        {formatDate(log.createdAt)}
-                      </span>
-                    </td>
-
-                    <td>
-                      {log.actorUserId ? (
-                        <div>
-                          <strong>{log.actorUserId.name}</strong>
-                          <small>
-                            {log.actorUserId.email}
-                          </small>
-                        </div>
-                      ) : (
-                        <span>System</span>
-                      )}
-                    </td>
-
-                    <td>
-                      <strong>
-                        {actionLabel(log.action)}
-                      </strong>
-                    </td>
-
-                    <td>
-                      <span>{log.resourceType}</span>
-                      {log.resourceId && (
-                        <small>{log.resourceId}</small>
-                      )}
-                    </td>
-
-                    <td>{log.description}</td>
-
-                    <td>
-                      {log.success ? (
-                        <span className="status-badge success">
-                          <CheckCircle2 size={15} />
-                          Success
-                        </span>
-                      ) : (
-                        <span className="status-badge danger">
-                          <XCircle size={15} />
-                          Failed
-                        </span>
-                      )}
-                    </td>
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Actor</th>
+                    <th>Action</th>
+                    <th>Resource</th>
+                    <th>Description</th>
+                    <th>Result</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                </thead>
 
-        {pagination.totalPages > 1 && (
-          <div className="pagination">
-            <Button
-              variant="secondary"
-              disabled={page <= 1}
-              onClick={() => setPage((current) => current - 1)}
-            >
-              Previous
-            </Button>
+                <tbody>
+                  {logs.map((log) => (
+                    <tr key={log._id}>
+                      <td>
+                        <span className="nowrap">
+                          {formatDate(log.createdAt)}
+                        </span>
+                      </td>
 
-            <span>
-              Page {pagination.page} of{" "}
-              {pagination.totalPages}
-            </span>
+                      <td>
+                        {log.actorUserId ? (
+                          <div>
+                            <strong>{log.actorUserId.name}</strong>
+                            <small>
+                              {log.actorUserId.email}
+                            </small>
+                          </div>
+                        ) : (
+                          <span>System</span>
+                        )}
+                      </td>
 
-            <Button
-              variant="secondary"
-              disabled={page >= pagination.totalPages}
-              onClick={() => setPage((current) => current + 1)}
-            >
-              Next
-            </Button>
-          </div>
+                      <td>
+                        <strong>
+                          {actionLabel(log.action)}
+                        </strong>
+                      </td>
+
+                      <td>
+                        <span>{log.resourceType}</span>
+                        {log.resourceId && (
+                          <small>{log.resourceId}</small>
+                        )}
+                      </td>
+
+                      <td>{log.description}</td>
+
+                      <td>
+                        {log.success ? (
+                          <Badge tone="success">
+                            <CheckCircle2 size={12} />
+                            Success
+                          </Badge>
+                        ) : (
+                          <Badge tone="danger">
+                            <XCircle size={12} />
+                            Failed
+                          </Badge>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {pagination.totalPages > 1 && (
+              <div className="pagination">
+                <Button
+                  variant="secondary"
+                  disabled={page <= 1}
+                  onClick={() => setPage((current) => current - 1)}
+                >
+                  Previous
+                </Button>
+
+                <span>
+                  Page {pagination.page} of{" "}
+                  {pagination.totalPages}
+                </span>
+
+                <Button
+                  variant="secondary"
+                  disabled={page >= pagination.totalPages}
+                  onClick={() => setPage((current) => current + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </>
         )}
       </section>
     </>

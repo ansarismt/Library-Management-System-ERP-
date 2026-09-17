@@ -256,6 +256,10 @@ export const meController = async (
 
     let linkedMemberId: string | undefined;
 
+    /*
+     * 1. If User already has a memberId,
+     *    try to find the Member using that value.
+     */
     if (user.memberId) {
       const member = await Member.findOne({
         memberId: user.memberId,
@@ -263,7 +267,27 @@ export const meController = async (
         .select("_id")
         .lean();
 
-      linkedMemberId = member?._id?.toString();
+      if (member) {
+        linkedMemberId = member._id.toString();
+      }
+    }
+
+    /*
+     * 2. If no memberId is stored on User,
+     *    link the account using the same email.
+     *
+     *    User.email -> Member.email
+     */
+    if (!linkedMemberId && user.email) {
+      const member = await Member.findOne({
+        email: user.email.toLowerCase().trim(),
+      })
+        .select("_id")
+        .lean();
+
+      if (member) {
+        linkedMemberId = member._id.toString();
+      }
     }
 
     res.status(200).json({
@@ -274,10 +298,16 @@ export const meController = async (
         email: user.email,
         role: user.role,
         status: user.status,
+
+        // IMPORTANT:
+        // This is the MongoDB Member _id,
+        // not the human-readable MEM001 value.
         memberId: linkedMemberId,
       },
     });
-  } catch {
+  } catch (error) {
+    console.error("meController error:", error);
+
     res.status(500).json({
       success: false,
       message: "Failed to get current user",

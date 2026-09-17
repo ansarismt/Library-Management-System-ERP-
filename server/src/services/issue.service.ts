@@ -18,7 +18,7 @@ import {
 import { Book } from "../models/Book.js";
 import { BookCopy } from "../models/BookCopy.js";
 import { Member } from "../models/Member.js";
-import { notifyMemberEvent } from "./notification.service.js";
+import { notifyMemberEvent, notifyAdmins } from "./notification.service.js";
 import { getSettings } from "../repositories/settings.repository.js";
 
 /* =========================================================
@@ -384,6 +384,17 @@ export const issueBookService = async (
       issue._id.toString(),
     );
 
+    // Notify admins about the book issue
+    const issueMember = await Member.findById(memberId).select("memberId name").exec();
+    const memberName = issueMember?.name || "A member";
+    await notifyAdmins(
+      "BOOK_ISSUED",
+      "Book issued",
+      `"${book.title}" was issued to ${memberName}.`,
+      "ISSUE",
+      issue._id.toString()
+    );
+
     return finalIssue;
   } catch (error) {
     if (
@@ -606,9 +617,31 @@ export const returnBookService =
       }
 
       /* -------------------------------------------------------
-         BOOK AVAILABLE COPIES + 1
-      ------------------------------------------------------- */
+          BOOK AVAILABLE COPIES + 1
+       ------------------------------------------------------- */
 
+      /*
+       * The physical BookCopy state and the active Issue state
+       * are the source of truth for whether a copy is being
+       * returned. The BookCopy update above already proved the
+       * copy was genuinely ISSUED and is now AVAILABLE.
+       *
+       * We use a guarded atomic increment that only increases
+       * availableCopies when there is room
+       * (availableCopies < totalCopies). This:
+       *
+       *   - keeps 0 <= availableCopies <= totalCopies, and
+       *   - is safe under concurrent returns (MongoDB serialises
+       *     the read-modify-write on the Book document).
+       *
+       * If availableCopies is already at (or somehow above)
+       * totalCopies — which is the existing-bad-data scenario —
+       * we do NOT fail the return. The physical copy was
+       * genuinely returned, so leaving the counter unchanged is
+       * safe and keeps it within bounds (after the return every
+       * copy is available, so availableCopies == totalCopies is
+       * correct).
+       */
       const updatedBook =
         await Book.findOneAndUpdate(
           {
@@ -633,9 +666,14 @@ export const returnBookService =
         );
 
       if (!updatedBook) {
-        throw new Error(
-          "Failed to update book availability",
-        );
+        /*
+         * availableCopies is already >= totalCopies.
+         *
+         * The BookCopy was still successfully returned
+         * (the update above succeeded with the ISSUED guard),
+         * so the return must NOT be aborted. Leaving the counter
+         * unchanged keeps 0 <= availableCopies <= totalCopies.
+         */
       }
 
       /* -------------------------------------------------------
@@ -696,6 +734,17 @@ export const returnBookService =
           `"${bookTitle}" has been returned successfully.`,
           "ISSUE",
           issueId,
+        );
+
+        // Notify admins about the book return
+        const returnMember = await Member.findById(issue.memberId).select("memberId name").exec();
+        const memberName = returnMember?.name || "A member";
+        await notifyAdmins(
+          "BOOK_RETURNED",
+          "Book returned",
+          `${memberName} returned "${bookTitle}".`,
+          "ISSUE",
+          issueId
         );
       }
 
@@ -854,6 +903,30 @@ export const renewBookService =
       }
 
       await session.commitTransaction();
+
+      // Notify member about renewal
+      await notifyMemberEvent(
+        issue.memberId.toString(),
+        "BOOK_RENEWED",
+        "Book renewed",
+        `Your book has been renewed. New due date: ${newDueAt.toLocaleDateString()}.`,
+        "ISSUE",
+        issueId
+      );
+
+      // Notify admins about the book renewal
+      const renewalMember = await Member.findById(issue.memberId).select("memberId name").exec();
+      const memberName = renewalMember?.name || "A member";
+      const bookTitle = typeof issue.bookId === "object" && "title" in issue.bookId
+        ? (issue.bookId as unknown as { title?: string }).title
+        : "A book";
+      await notifyAdmins(
+        "BOOK_RENEWED",
+        "Book renewed",
+        `${memberName} renewed "${bookTitle}".`,
+        "ISSUE",
+        issueId
+      );
 
       return getIssueById(
         issueId,

@@ -10,6 +10,7 @@ import {
   deleteMember,
   CreateMemberData,
 } from "../repositories/member.repository.js";
+import { notifyMemberEvent, notifyAdmins } from "./notification.service.js";
 
 export const createMemberService = async (
   data: CreateMemberData
@@ -28,7 +29,28 @@ export const createMemberService = async (
     throw new Error("Email is already registered");
   }
 
-  return createMember(data);
+  const member = await createMember(data);
+
+  // Notify member about account creation
+  await notifyMemberEvent(
+    member._id.toString(),
+    "MEMBER_CREATED",
+    "Member account created",
+    `Your library member account has been created. Your member ID is ${member.memberId}.`,
+    "MEMBER",
+    member._id.toString()
+  );
+
+  // Notify admins about new member
+  await notifyAdmins(
+    "MEMBER_CREATED",
+    "New member registered",
+    `New member "${member.name}" (${member.memberId}) has been registered.`,
+    "MEMBER",
+    member._id.toString()
+  );
+
+  return member;
 };
 
 export const listMembersService = async (
@@ -91,7 +113,31 @@ export const updateMemberService = async (
     }
   }
 
-  return updateMember(id, data);
+  const updatedMember = await updateMember(id, data);
+
+  if (!updatedMember) {
+    throw new Error("Failed to update member");
+  }
+
+  await notifyMemberEvent(
+    id,
+    "MEMBER_UPDATED",
+    "Member account updated",
+    "Your member account details have been updated.",
+    "MEMBER",
+    id
+  );
+
+  // Notify admins about member update
+  await notifyAdmins(
+    "MEMBER_UPDATED",
+    "Member account updated",
+    `Member account "${existingMember.name}" (${existingMember.memberId}) has been updated.`,
+    "MEMBER",
+    id
+  );
+
+  return updatedMember;
 };
 
 export const deleteMemberService = async (
@@ -107,5 +153,29 @@ export const deleteMemberService = async (
     throw new Error("Member not found");
   }
 
-  return deleteMember(id);
+  const deletedMember = await deleteMember(id);
+
+  if (!deletedMember) {
+    throw new Error("Failed to delete member");
+  }
+
+  await notifyMemberEvent(
+    id,
+    "MEMBER_DELETED",
+    "Member account deleted",
+    "Your member account has been deleted.",
+    "MEMBER",
+    id
+  );
+
+  // Notify admins about member deletion
+  await notifyAdmins(
+    "MEMBER_DELETED",
+    "Member account deleted",
+    `Member account "${member.name}" (${member.memberId}) has been deleted.`,
+    "MEMBER",
+    id
+  );
+
+  return deletedMember;
 };

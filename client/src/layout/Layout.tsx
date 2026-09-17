@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   NavLink,
@@ -23,6 +23,7 @@ import {
   UserRound,
   Users,
   X,
+  UserPen,
 } from "lucide-react";
 
 import { useAuth } from "./AuthContext";
@@ -114,14 +115,33 @@ export function Layout() {
     can,
   } = useAuth();
 
-  const [collapsed, setCollapsed] =
-    useState(false);
-
-  const [mobile, setMobile] =
-    useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobile, setMobile] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
   const unreadQuery = useQuery({ queryKey: ["notification-unread-count"], queryFn: notificationsApi.unreadCount, refetchInterval: 60_000 });
 
   const nav = useNavigate();
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && profileOpen) {
+        setProfileOpen(false);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [profileOpen]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setProfileOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const isStaff = user?.role
     ? staffRoles.includes(user.role)
@@ -145,6 +165,23 @@ export function Layout() {
 
       return item;
     });
+
+  const handleProfileClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setProfileOpen(!profileOpen);
+  };
+
+  const handleActionClick = (action: "settings" | "edit" | "logout") => {
+    setProfileOpen(false);
+    if (action === "settings") {
+      nav("/settings");
+    } else if (action === "edit") {
+      nav("/settings");
+    } else if (action === "logout") {
+      logout();
+      nav("/login");
+    }
+  };
 
   return (
     <div className="app-shell">
@@ -252,25 +289,86 @@ export function Layout() {
 
           <div className="topbar-spacer" />
 
-          <div className="profile">
-            <div className="avatar">
-              {user?.name
-                ?.slice(0, 1)
-                .toUpperCase()}
+          <div className="profile-wrapper" ref={profileRef}>
+            <div className="profile" onClick={handleProfileClick}>
+              <div className="avatar">
+                {user?.name
+                  ?.slice(0, 1)
+                  .toUpperCase()}
+              </div>
+
+              <div className="profile-copy">
+                <strong>
+                  {user?.name}
+                </strong>
+
+                <span>
+                  {user?.role?.replaceAll(
+                    "_",
+                    " ",
+                  )}
+                </span>
+              </div>
             </div>
 
-            <div className="profile-copy">
-              <strong>
-                {user?.name}
-              </strong>
+            {profileOpen && (
+              <div className="profile-dropdown">
+                <div className="dropdown-header">
+                  <div className="dropdown-avatar">
+                    {user?.name
+                      ?.slice(0, 1)
+                      .toUpperCase()}
+                  </div>
+                  <div className="dropdown-info">
+                    <strong>{user?.name}</strong>
+                    <span>{user?.role?.replaceAll("_", " ")}</span>
+                  </div>
+                </div>
 
-              <span>
-                {user?.role?.replaceAll(
-                  "_",
-                  " ",
-                )}
-              </span>
-            </div>
+                <div className="dropdown-divider" />
+
+                <div className="dropdown-fields">
+                  <div className="dropdown-field">
+                    <UserRound size={14} />
+                    <div className="field-content">
+                      <small>Admin/User ID</small>
+                      <span>{user?.id}</span>
+                    </div>
+                  </div>
+                  <div className="dropdown-field">
+                    <UserRound size={14} />
+                    <div className="field-content">
+                      <small>Email</small>
+                      <span>{user?.email}</span>
+                    </div>
+                  </div>
+                  <div className="dropdown-field">
+                    <UserRound size={14} />
+                    <div className="field-content">
+                      <small>Phone</small>
+                      <span>{user?.memberId ?? "Not provided"}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="dropdown-divider" />
+
+                <div className="dropdown-actions">
+                  <button className="dropdown-action" onClick={() => handleActionClick("settings")}>
+                    <Settings size={14} />
+                    <span>Profile settings</span>
+                  </button>
+                  <button className="dropdown-action" onClick={() => handleActionClick("edit")}>
+                    <UserPen size={14} />
+                    <span>Edit profile</span>
+                  </button>
+                  <button className="dropdown-action logout" onClick={() => handleActionClick("logout")}>
+                    <LogOut size={14} />
+                    <span>Logout</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </header>
 

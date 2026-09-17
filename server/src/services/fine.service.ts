@@ -12,7 +12,7 @@ import {
 
 import { Issue } from "../models/Issue.js";
 import { Member } from "../models/Member.js";
-import { notifyMemberEvent } from "./notification.service.js";
+import { notifyMemberEvent, notifyAdmins } from "./notification.service.js";
 
 
 
@@ -148,12 +148,24 @@ if (daysOverdue <= 0) {
     session
   );
 
-    if (session) {
+if (session) {
       return fine;
     }
 
     const result = await getFineById(fine._id.toString());
     await notifyMemberEvent(issue.memberId.toString(), "FINE_CREATED", "Fine created", `A fine of ${amount} has been added to your account.`, "FINE", fine._id.toString());
+
+    // Notify admins about the new fine
+    const fineMember = await Member.findById(issue.memberId).select("memberId name").exec();
+    const memberName = fineMember?.name || "A member";
+    await notifyAdmins(
+      "FINE_CREATED",
+      "Fine created",
+      `A fine of ${amount} was created for ${memberName}.`,
+      "FINE",
+      fine._id.toString()
+    );
+
     return result;
   };
 
@@ -368,7 +380,20 @@ export const payFineService =
       );
 
       const result = await getFineById(fineId);
-      if (result?.status === "PAID") await notifyMemberEvent(result.memberId.toString(), "FINE_PAID", "Fine paid", "Your fine payment has been completed.", "FINE", fineId);
+      if (result?.status === "PAID") {
+        await notifyMemberEvent(result.memberId.toString(), "FINE_PAID", "Fine paid", "Your fine payment has been completed.", "FINE", fineId);
+
+        // Notify admins about the fine payment
+        const paidMember = await Member.findById(result.memberId).select("memberId name").exec();
+        const memberName = paidMember?.name || "A member";
+        await notifyAdmins(
+          "FINE_PAID",
+          "Fine paid",
+          `${memberName} paid their fine.`,
+          "FINE",
+          fineId
+        );
+      }
       return result;
     } finally {
       await session.endSession();
@@ -464,8 +489,21 @@ export const waiveFineService =
       );
     }
 
-    const result = await getFineById(fineId);
-    if (result) await notifyMemberEvent(result.memberId.toString(), "FINE_WAIVED", "Fine waived", "Your fine has been waived.", "FINE", fineId);
+const result = await getFineById(fineId);
+    if (result) {
+      await notifyMemberEvent(result.memberId.toString(), "FINE_WAIVED", "Fine waived", "Your fine has been waived.", "FINE", fineId);
+
+      // Notify admins about the fine waiver
+      const member = await Member.findById(result.memberId).select("memberId name").exec();
+      const memberName = member?.name || "A member";
+      await notifyAdmins(
+        "FINE_WAIVED",
+        "Fine waived",
+        `${memberName}'s fine was waived.`,
+        "FINE",
+        fineId
+      );
+    }
     return result;
   };
 

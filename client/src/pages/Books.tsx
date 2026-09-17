@@ -61,6 +61,77 @@ const emptyCopy = {
   notes: "",
 };
 
+/*
+ * IMPORTANT:
+ * Only send fields that the backend actually expects.
+ *
+ * Do NOT spread the MongoDB document here because that would
+ * send _id, createdAt, updatedAt and __v to the strict validator.
+ */
+function buildBookPayload(v: any) {
+  return {
+    isbn: String(v.isbn ?? "").trim(),
+    title: String(v.title ?? "").trim(),
+
+    authors: String(v.authors ?? "")
+      .split(",")
+      .map((x: string) => x.trim())
+      .filter(Boolean),
+
+    publisher: String(v.publisher ?? "").trim(),
+
+    publicationYear: v.publicationYear
+      ? Number(v.publicationYear)
+      : undefined,
+
+    edition: String(v.edition ?? "").trim(),
+    category: String(v.category ?? "").trim(),
+    language: String(v.language ?? "").trim(),
+
+    description: String(v.description ?? "").trim(),
+    coverImage: String(v.coverImage ?? "").trim(),
+
+    totalCopies: Number(v.totalCopies),
+
+    status: String(v.status ?? "ACTIVE"),
+  };
+}
+
+/*
+ * Same protection for physical copies.
+ * MongoDB metadata is never sent back to the API.
+ */
+function buildCopyPayload(v: any, includeBookId = true) {
+  const payload: Record<string, unknown> = {
+    accessionNumber: String(v.accessionNumber ?? "").trim(),
+    barcode: String(v.barcode ?? "").trim(),
+    location: String(v.location ?? "").trim(),
+    status: String(v.status ?? "AVAILABLE"),
+    condition: String(v.condition ?? "GOOD"),
+
+    acquiredAt: v.acquiredAt
+      ? v.acquiredAt
+      : undefined,
+
+    price: v.price !== "" && v.price !== undefined
+      ? Number(v.price)
+      : undefined,
+
+    notes: String(v.notes ?? "").trim(),
+  };
+
+  /*
+   * bookId is needed when creating a new physical copy.
+   * During edit we don't send it because the Book is not
+   * changed by the physical-copy edit form.
+   */
+  if (includeBookId) {
+    payload.bookId = v.bookId;
+  }
+
+  return payload;
+}
+
 export default function Books() {
   const { user, can } = useAuth();
 
@@ -94,10 +165,7 @@ export default function Books() {
   });
 
   /*
-   * Physical copies are only loaded when the
-   * authenticated user has permission to read them.
-   *
-   * Students normally do not have BOOK_COPY_READ.
+   * Physical copies
    */
   const cq = useQuery({
     queryKey: ["copies"],
@@ -106,10 +174,7 @@ export default function Books() {
   });
 
   /*
-   * Student's own reservations.
-   *
-   * The backend expects the MongoDB Member _id,
-   * which is supplied by user.memberId.
+   * Student reservations
    */
   const rq = useQuery({
     queryKey: ["my-reservations", user?.memberId],
@@ -129,7 +194,7 @@ export default function Books() {
   });
 
   /*
-   * Create reservation.
+   * Create reservation
    */
   const rm = useMutation({
     mutationFn: (bookId: string) => {
@@ -157,7 +222,7 @@ export default function Books() {
   });
 
   /*
-   * Book management.
+   * Book management
    */
   const bm = useMutation({
     mutationFn: (v: { id?: string; body: any }) =>
@@ -175,7 +240,7 @@ export default function Books() {
   });
 
   /*
-   * Physical-copy management.
+   * Physical-copy management
    */
   const cm = useMutation({
     mutationFn: (v: { id?: string; body: any }) =>
@@ -201,7 +266,7 @@ export default function Books() {
   const reservations = rq.data ?? [];
 
   /*
-   * Search filtering.
+   * Search filtering
    */
   const filtered = useMemo(() => {
     const s = search.toLowerCase().trim();
@@ -226,15 +291,13 @@ export default function Books() {
   }, [tab, books, copies, search]);
 
   /*
-   * Physical copies tab can only be shown when the
-   * current user has BOOK_COPY_READ.
+   * Physical copies tab
    */
   const showingCopies =
     tab === "copies" && canCopyRead;
 
   /*
-   * If a student has no member linkage, don't silently
-   * let reservation UI fail later.
+   * Student reservation account check
    */
   const reservationAccountError =
     isStudent &&
@@ -302,7 +365,10 @@ export default function Books() {
       />
 
       {reservationAccountError && (
-        <div className="form-error" style={{ marginBottom: 16 }}>
+        <div
+          className="form-error"
+          style={{ marginBottom: 16 }}
+        >
           Your student account is not linked to a library member,
           so reservations cannot be created.
         </div>
@@ -361,10 +427,7 @@ export default function Books() {
         <div className="card-grid">
           {(filtered as Book[]).map((book) => {
             /*
-             * Find an active reservation belonging to this
-             * student's book.
-             *
-             * WAITING and READY are considered active.
+             * Find an active reservation for this student's book.
              */
             const existingReservation =
               reservations.find((reservation) => {
@@ -381,7 +444,7 @@ export default function Books() {
                 );
               });
 
-            const isUnavailable =
+            
               book.availableCopies === 0;
 
             const showReserveButton =
@@ -389,7 +452,6 @@ export default function Books() {
               canReserve &&
               canReadReservations &&
               Boolean(user?.memberId) &&
-              isUnavailable &&
               !existingReservation;
 
             return (
@@ -433,7 +495,8 @@ export default function Books() {
                     </strong>
                   </div>
 
-                  {rm.error && rm.variables === book._id ? (
+                  {rm.error &&
+                  rm.variables === book._id ? (
                     <div
                       className="form-error"
                       style={{ marginTop: 10 }}
@@ -510,13 +573,19 @@ export default function Books() {
                                 `Delete ${book.title}?`,
                               )
                             ) {
-                              await booksApi.remove(
-                                book._id,
-                              );
+                              try {
+                                await booksApi.remove(
+                                  book._id,
+                                );
 
-                              qc.invalidateQueries({
-                                queryKey: ["books"],
-                              });
+                                qc.invalidateQueries({
+                                  queryKey: ["books"],
+                                });
+                              } catch (error) {
+                                alert(
+                                  errorMessage(error),
+                                );
+                              }
                             }
                           }}
                         >
@@ -641,8 +710,19 @@ function BookForm({
   const [v, setV] = useState<any>(
     initial
       ? {
-          ...initial,
-          authors: initial.authors.join(","),
+          isbn: initial.isbn ?? "",
+          title: initial.title ?? "",
+          authors: initial.authors.join(", "),
+          publisher: initial.publisher ?? "",
+          publicationYear:
+            initial.publicationYear ?? "",
+          edition: initial.edition ?? "",
+          category: initial.category ?? "",
+          language: initial.language ?? "English",
+          description: initial.description ?? "",
+          coverImage: initial.coverImage ?? "",
+          totalCopies: initial.totalCopies ?? "",
+          status: initial.status ?? "ACTIVE",
         }
       : emptyBook,
   );
@@ -665,21 +745,9 @@ function BookForm({
         onSubmit={(e) => {
           e.preventDefault();
 
-          onSave({
-            ...v,
+          const payload = buildBookPayload(v);
 
-            authors: v.authors
-              .split(",")
-              .map((x: string) => x.trim())
-              .filter(Boolean),
-
-            publicationYear:
-              v.publicationYear
-                ? Number(v.publicationYear)
-                : undefined,
-
-            totalCopies: Number(v.totalCopies),
-          });
+          onSave(payload);
         }}
       >
         <Input
@@ -817,7 +885,10 @@ function BookForm({
             Cancel
           </Button>
 
-          <Button loading={busy}>
+          <Button
+            loading={busy}
+            type="submit"
+          >
             Save book
           </Button>
         </div>
@@ -841,15 +912,32 @@ function CopyForm({
   onClose: () => void;
   onSave: (v: any) => void;
 }) {
+  const initialBookId = initial
+    ? typeof initial.bookId === "string"
+      ? initial.bookId
+      : initial.bookId._id
+    : "";
+
   const [v, setV] = useState<any>(
     initial
       ? {
-          ...initial,
-
-          bookId:
-            typeof initial.bookId === "string"
-              ? initial.bookId
-              : initial.bookId._id,
+          bookId: initialBookId,
+          accessionNumber:
+            initial.accessionNumber ?? "",
+          barcode: initial.barcode ?? "",
+          location: initial.location ?? "",
+          status: initial.status ?? "AVAILABLE",
+          condition:
+            initial.condition ?? "GOOD",
+          acquiredAt:
+            initial.acquiredAt?.slice?.(0, 10) ??
+            "",
+          price:
+            initial.price !== undefined &&
+            initial.price !== null
+              ? String(initial.price)
+              : "",
+          notes: initial.notes ?? "",
         }
       : emptyCopy,
   );
@@ -874,16 +962,20 @@ function CopyForm({
         onSubmit={(e) => {
           e.preventDefault();
 
-          onSave({
-            ...v,
+          /*
+           * For CREATE:
+           * send bookId.
+           *
+           * For UPDATE:
+           * don't send bookId because this form doesn't
+           * change the parent book.
+           */
+          const payload = buildCopyPayload(
+            v,
+            !initial,
+          );
 
-            price: v.price
-              ? Number(v.price)
-              : undefined,
-
-            acquiredAt:
-              v.acquiredAt || undefined,
-          });
+          onSave(payload);
         }}
       >
         {!initial && (
@@ -997,10 +1089,7 @@ function CopyForm({
         <Input
           label="Acquired at"
           type="date"
-          value={
-            v.acquiredAt?.slice?.(0, 10) ||
-            v.acquiredAt
-          }
+          value={v.acquiredAt}
           onChange={(e) =>
             set(
               "acquiredAt",
@@ -1050,7 +1139,10 @@ function CopyForm({
             Cancel
           </Button>
 
-          <Button loading={busy}>
+          <Button
+            loading={busy}
+            type="submit"
+          >
             Save copy
           </Button>
         </div>

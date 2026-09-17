@@ -9,6 +9,7 @@ import {
   deleteBookCopy,
 } from "../repositories/bookCopy.repository.js";
 import { Book } from "../models/Book.js";
+import { notifyAdmins } from "./notification.service.js";
 
 export const createBookCopyService = async (data: {
   bookId: string;
@@ -49,6 +50,15 @@ export const createBookCopyService = async (data: {
         : {}),
     },
   });
+
+  // Notify admins about new book copy
+  await notifyAdmins(
+    "BOOK_COPY_CREATED",
+    "Book copy added",
+    `New copy (${copy.accessionNumber}) added for "${book.title}".`,
+    "BOOK_COPY",
+    copy._id.toString()
+  );
 
   return copy;
 };
@@ -137,6 +147,15 @@ export const updateBookCopyService = async (
         $inc: { availableCopies: 1 },
       });
     }
+
+    // Notify admins about status change
+    await notifyAdmins(
+      "BOOK_COPY_STATUS_CHANGED",
+      "Book copy status changed",
+      `Copy ${updatedCopy.accessionNumber} status changed from ${oldStatus} to ${newStatus}.`,
+      "BOOK_COPY",
+      updatedCopy._id.toString()
+    );
   }
 
   return updatedCopy;
@@ -175,6 +194,15 @@ export const deleteBookCopyService = async (
         : {}),
     },
   });
+
+  // Notify admins about deleted copy
+  await notifyAdmins(
+    "BOOK_COPY_DELETED",
+    "Book copy deleted",
+    `Copy ${copy.accessionNumber} has been removed.`,
+    "BOOK_COPY",
+    copy._id.toString()
+  );
 
   return deletedCopy;
 };
