@@ -18,7 +18,7 @@ import {
 import { Book } from "../models/Book.js";
 import { BookCopy } from "../models/BookCopy.js";
 import { Member } from "../models/Member.js";
-import { notifyMemberEvent, notifyAdmins } from "./notification.service.js";
+import { notifyMemberEvent, notifyAdmins, notifyDueDateUpdated } from "./notification.service.js";
 import { getSettings } from "../repositories/settings.repository.js";
 
 /* =========================================================
@@ -987,6 +987,44 @@ export const updateIssueService =
           "Invalid due date",
         );
       }
+
+      // Check if due date actually changed
+      const oldDueAt = existing.dueAt;
+      const newDueAt = data.dueAt;
+
+      if (oldDueAt.getTime() === newDueAt.getTime()) {
+        // No change in due date, skip notification
+        const updated = await updateIssue(id, data);
+        if (!updated) {
+          throw new Error("Failed to update issue");
+        }
+        return updated;
+      }
+
+      const updated = await updateIssue(id, data);
+
+      if (!updated) {
+        throw new Error("Failed to update issue");
+      }
+
+      // Get member and book details for notification
+      const issue = await getIssueById(id);
+      if (issue) {
+        const bookTitle = typeof issue.bookId === "object" && "title" in issue.bookId
+          ? (issue.bookId as unknown as { title?: string }).title ?? "the book"
+          : "the book";
+
+        // Notify affected member and authorized circulation staff
+        await notifyDueDateUpdated(
+          issue.memberId.toString(),
+          bookTitle,
+          oldDueAt,
+          newDueAt,
+          issue._id.toString()
+        );
+      }
+
+      return updated;
     }
 
     const updated =

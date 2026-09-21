@@ -330,6 +330,60 @@ function ReservationManagement() {
         </div>
       </div>
 
+      {/* Reservation workflow */}
+      <div className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>Reservation workflow</h2>
+            <p>Manage reservations in queue order.</p>
+          </div>
+        </div>
+
+        <div className="dashboard-grid">
+          <div className="panel">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-slate-100 p-2">
+                <span className="text-sm font-semibold text-slate-700">1</span>
+              </div>
+
+              <p className="font-medium text-slate-900">WAITING</p>
+            </div>
+
+            <p className="mt-3 text-sm text-slate-500">
+              Member is waiting in the reservation queue.
+            </p>
+          </div>
+
+          <div className="panel">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-slate-100 p-2">
+                <span className="text-sm font-semibold text-slate-700">2</span>
+              </div>
+
+              <p className="font-medium text-slate-900">READY</p>
+            </div>
+
+            <p className="mt-3 text-sm text-slate-500">
+              Staff marks the reservation ready when the book can be picked up.
+            </p>
+          </div>
+
+          <div className="panel">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-slate-100 p-2">
+                <span className="text-sm font-semibold text-slate-700">3</span>
+              </div>
+
+              <p className="font-medium text-slate-900">FULFILLED</p>
+            </div>
+
+            <p className="mt-3 text-sm text-slate-500">
+              Fulfill the reservation and create the library issue.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Empty */}
       {reservations.length === 0 ? (
         <div className="panel">
@@ -494,62 +548,7 @@ function ReservationManagement() {
             </tbody>
           </table>
         </div>
-      )}
-
-      {/* Workflow explanation */}
-      <div className="panel">
-        <div className="panel-head">
-          <div>
-            <h2>Reservation workflow</h2>
-            <p>Manage reservations in queue order.</p>
-          </div>
-        </div>
-
-        <div className="dashboard-grid">
-          <div className="panel">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-slate-100 p-2">
-                <span className="text-sm font-semibold text-slate-700">1</span>
-              </div>
-
-              <p className="font-medium text-slate-900">WAITING</p>
-            </div>
-
-            <p className="mt-3 text-sm text-slate-500">
-              Member is waiting in the reservation queue.
-            </p>
-          </div>
-
-          <div className="panel">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-slate-100 p-2">
-                <span className="text-sm font-semibold text-slate-700">2</span>
-              </div>
-
-              <p className="font-medium text-slate-900">READY</p>
-            </div>
-
-            <p className="mt-3 text-sm text-slate-500">
-              Staff marks the reservation ready when the book can be picked up.
-            </p>
-          </div>
-
-          <div className="panel">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-slate-100 p-2">
-                <span className="text-sm font-semibold text-slate-700">3</span>
-              </div>
-
-              <p className="font-medium text-slate-900">FULFILLED</p>
-            </div>
-
-            <p className="mt-3 text-sm text-slate-500">
-              Fulfill the reservation and create the library issue.
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
+      )}    </div>
   );
 }
 

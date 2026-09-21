@@ -91,3 +91,31 @@ export const notifyAdmins = async (type: NotificationType, title: string, messag
     type, title, message, relatedResourceType, relatedResourceId 
   })));
 };
+
+/** Create DUE_DATE_UPDATED notification for member and authorized circulation staff */
+export const notifyDueDateUpdated = async (
+  memberId: string,
+  bookTitle: string,
+  oldDueAt: Date,
+  newDueAt: Date,
+  issueId: string
+) => {
+  // Notify the affected member
+  await notifyMemberEvent(
+    memberId,
+    "DUE_DATE_UPDATED",
+    "Due date updated",
+    `The due date for "${bookTitle}" has been changed from ${oldDueAt.toLocaleString()} to ${newDueAt.toLocaleString()}.`,
+    "ISSUE",
+    issueId
+  );
+
+  // Notify authorized circulation/admin staff
+  await notifyAdmins(
+    "DUE_DATE_UPDATED",
+    "Due date updated",
+    `Due date for "${bookTitle}" changed from ${oldDueAt.toLocaleString()} to ${newDueAt.toLocaleString()}.`,
+    "ISSUE",
+    issueId
+  );
+};

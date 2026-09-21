@@ -86,7 +86,7 @@ export default function App() {
 
             <Route
               element={
-                <PermissionRoute permission="BOOK_ISSUE" />
+                <PermissionRoute permission={["BOOK_ISSUE", "CIRCULATION_PERSONAL"]} />
               }
             >
               <Route
@@ -110,7 +110,7 @@ export default function App() {
 
             <Route
               element={
-                <PermissionRoute permission="USER_READ" />
+                <PermissionRoute permission="USER_CREATE" />
               }
             >
               <Route

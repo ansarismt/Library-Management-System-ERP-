@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeftRight,
   CalendarClock,
   Check,
+  Edit,
   Plus,
   RefreshCw,
 } from "lucide-react";
@@ -23,10 +24,15 @@ import {
 import { ErrorState, errorMessage } from "../components/ErrorState";
 import { date, dateTime, idOf, nameOf, titleOf, tone } from "../utils/format";
 import { useAuth } from "../layout/AuthContext";
+import { useMemberId } from "../hooks/useMemberId";
 import type { Book, BookCopy, Issue, Member } from "../types";
+
 export default function Circulation() {
   const qc = useQueryClient();
-  const { user } = useAuth();
+  const { user, can } = useAuth();
+  const memberId = useMemberId();
+  const isPersonalUser = ["STUDENT", "FACULTY", "MEMBER"].includes(user?.role ?? "");
+  const isStaff = can("BOOK_ISSUE");
   const [tab, setTab] = useState<"active" | "history">("active");
   const [s, setS] = useState("");
   const [issueModal, setIssueModal] = useState(false);
@@ -34,10 +40,25 @@ export default function Circulation() {
     kind: "return" | "renew";
     issue: Issue;
   } | null>(null);
+  const [editDueDate, setEditDueDate] = useState<Issue | null>(null);
+
+  // Staff users see all issues; personal users see only their own loans
+  const issuesQueryOptions = {
+    queryKey: ["issues", isPersonalUser ? memberId : "all"],
+    queryFn: () => isPersonalUser ? issuesApi.byMember(memberId!) : issuesApi.list(),
+    enabled: !isPersonalUser || Boolean(memberId),
+  };
+
+  const membersQueryOptions = {
+    queryKey: ["members"],
+    queryFn: membersApi.list,
+    enabled: !isPersonalUser,
+  };
+
   const qs = useQueries({
     queries: [
-      { queryKey: ["issues"], queryFn: issuesApi.list },
-      { queryKey: ["members"], queryFn: membersApi.list },
+      issuesQueryOptions,
+      membersQueryOptions,
       { queryKey: ["books"], queryFn: booksApi.list },
       { queryKey: ["copies"], queryFn: copiesApi.list },
     ],
@@ -66,9 +87,11 @@ export default function Circulation() {
         title="Circulation"
         subtitle="Issue, return and renew books while keeping inventory synchronized."
         action={
-          <Button onClick={() => setIssueModal(true)}>
-            <Plus size={17} /> Issue book
-          </Button>
+          isStaff && (
+            <Button onClick={() => setIssueModal(true)}>
+              <Plus size={17} /> Issue book
+            </Button>
+          )
         }
       />
       <div className="tabs">
@@ -132,7 +155,7 @@ export default function Circulation() {
                       </Badge>
                     </td>
                     <td>
-                      {x.status === "ISSUED" && (
+                      {x.status === "ISSUED" && isStaff && (
                         <div className="inline-actions">
                           <Button
                             variant="secondary"
@@ -149,6 +172,12 @@ export default function Circulation() {
                             }
                           >
                             <RefreshCw size={14} /> Renew
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => setEditDueDate(x)}
+                          >
+                            <Edit size={14} /> Edit Due Date
                           </Button>
                         </div>
                       )}
@@ -188,6 +217,16 @@ export default function Circulation() {
             qc.invalidateQueries({ queryKey: ["copies"] });
             qc.invalidateQueries({ queryKey: ["books"] });
             setAction(null);
+          }}
+        />
+      )}
+      {editDueDate && (
+        <EditDueDateModal
+          issue={editDueDate}
+          onClose={() => setEditDueDate(null)}
+          onSaved={() => {
+            qc.invalidateQueries({ queryKey: ["issues"] });
+            setEditDueDate(null);
           }}
         />
       )}
@@ -382,6 +421,100 @@ function LoanAction({
           </Button>
           <Button loading={busy}>
             {kind === "return" ? "Confirm return" : "Renew loan"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+function EditDueDateModal({
+  issue,
+  onClose,
+  onSaved,
+}: {
+  issue: Issue;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [dueDate, setDueDate] = useState("");
+  const [dueTime, setDueTime] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  // Initialize date and time from issue.dueAt
+  useEffect(() => {
+    if (issue.dueAt) {
+      const date = new Date(issue.dueAt);
+      // Format date as YYYY-MM-DD for datetime-local input
+      const dateStr = date.toISOString().slice(0, 16);
+      setDueDate(dateStr.slice(0, 10));
+      setDueTime(dateStr.slice(11, 16));
+    }
+  }, [issue]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+
+    try {
+      if (!dueDate || !dueTime) {
+        setError("Due date and time are required");
+        return;
+      }
+
+      const dueAt = new Date(`${dueDate}T${dueTime}:00`);
+
+      if (isNaN(dueAt.getTime())) {
+        setError("Invalid date or time");
+        return;
+      }
+
+      // Allow past dates for administrative editing
+      // The backend will validate if needed
+
+      await issuesApi.update(issue._id, { dueAt: dueAt.toISOString() });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Edit Due Date & Time" onClose={onClose}>
+      <form className="form-grid" onSubmit={submit}>
+        <div className="full">
+          <label className="settings-field">
+            <span className="settings-field-label">Due date</span>
+            <input
+              type="date"
+              required
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="full">
+          <label className="settings-field">
+            <span className="settings-field-label">Due time</span>
+            <input
+              type="time"
+              required
+              value={dueTime}
+              onChange={(e) => setDueTime(e.target.value)}
+            />
+          </label>
+        </div>
+        {error && <div className="form-error full">{error}</div>}
+        <div className="form-actions full">
+          <Button variant="secondary" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button loading={busy} type="submit">
+            Save changes
           </Button>
         </div>
       </form>

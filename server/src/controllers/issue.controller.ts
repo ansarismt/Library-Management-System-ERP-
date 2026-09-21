@@ -2,6 +2,7 @@ import {
   Request,
   Response,
 } from "express";
+import { AuthenticatedRequest } from "../middleware/auth.middleware.js";
 
 import {
   issueBookService,
@@ -233,9 +234,11 @@ export const getIssueController =
    MEMBER ISSUES
 ========================================================= */
 
+const PERSONAL_ROLES = ["STUDENT", "FACULTY", "MEMBER"] as const;
+
 export const getMemberIssuesController =
   async (
-    req: Request,
+    req: AuthenticatedRequest,
     res: Response
   ): Promise<void> => {
     try {
@@ -252,6 +255,20 @@ export const getMemberIssuesController =
             "Invalid member ID",
         });
         return;
+      }
+
+      // Ownership check for personal users
+      const userRole = req.user?.role;
+      if (userRole && PERSONAL_ROLES.includes(userRole as typeof PERSONAL_ROLES[number])) {
+        const { findUserById } = await import("../repositories/user.repository.js");
+        const user = await findUserById(req.user!.userId);
+        if (!user?.memberId || user.memberId !== memberId) {
+          res.status(403).json({
+            success: false,
+            message: "Insufficient permissions: can only access your own circulation records",
+          });
+          return;
+        }
       }
 
       const issues =

@@ -180,17 +180,11 @@ export default function Books() {
     queryKey: ["my-reservations", user?.memberId],
     queryFn: () => {
       if (!user?.memberId) {
-        throw new Error(
-          "Your account is not linked to a library member.",
-        );
+        return [] as any;
       }
-
       return reservationsApi.byMember(user.memberId);
     },
-    enabled:
-      isStudent &&
-      canReadReservations &&
-      Boolean(user?.memberId),
+    enabled: isStudent && canReadReservations && Boolean(user?.memberId),
   });
 
   /*
@@ -426,15 +420,15 @@ export default function Books() {
       ) : !showingCopies ? (
         <div className="card-grid">
           {(filtered as Book[]).map((book) => {
-            /*
-             * Find an active reservation for this student's book.
-             */
-            const existingReservation =
-              reservations.find((reservation) => {
-                const reservationBookId =
-                  typeof reservation.bookId === "string"
-                    ? reservation.bookId
-                    : reservation.bookId._id;
+/*
+              * Find an active reservation for this student's book.
+              */
+             const existingReservation =
+               reservations.find((reservation: any) => {
+                 const reservationBookId =
+                   typeof reservation.bookId === "string"
+                     ? reservation.bookId
+                     : reservation.bookId._id;
 
                 return (
                   reservationBookId === book._id &&

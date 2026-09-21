@@ -34,7 +34,7 @@ const items: {
   to: string;
   label: string;
   icon: React.ElementType;
-  permission?: Permission;
+  permission?: Permission | Permission[];
 }[] = [
   {
     to: "/",
@@ -68,7 +68,7 @@ const items: {
     to: "/circulation",
     label: "Circulation",
     icon: Repeat2,
-    permission: "BOOK_ISSUE",
+    permission: ["BOOK_ISSUE", "CIRCULATION_PERSONAL"],
   },
 
   {
@@ -82,7 +82,7 @@ const items: {
     to: "/users",
     label: "User Management",
     icon: UserRound,
-    permission: "USER_READ",
+    permission: "USER_CREATE",
   },
 
   {
@@ -147,11 +147,15 @@ export function Layout() {
     ? staffRoles.includes(user.role)
     : false;
 
+  const hasPermission = (perm?: Permission | Permission[]) => {
+    if (!perm) return true;
+    const perms = Array.isArray(perm) ? perm : [perm];
+    return perms.some((p) => can(p));
+  };
+
   const visible = items
     .filter(
-      (x) =>
-        !x.permission ||
-        can(x.permission),
+      (x) => hasPermission(x.permission),
     )
     .map((item) => {
       if (item.to === "/reservations") {

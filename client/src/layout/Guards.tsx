@@ -18,15 +18,16 @@ export function Protected() {
     <Navigate to="/login" replace state={{ from: loc.pathname }} />
   );
 }
-export function PermissionRoute({ permission }: { permission: Permission }) {
+export function PermissionRoute({ permission }: { permission: Permission | Permission[] }) {
   const { can } = useAuth();
-  if (!can(permission))
+  const permissions = Array.isArray(permission) ? permission : [permission];
+  if (!permissions.some((p) => can(p)))
     return (
       <div className="denied">
         <ShieldAlert size={42} />
         <h2>Access restricted</h2>
         <p>
-          Your role does not have <code>{permission}</code>.
+          Your role does not have the required permissions.
         </p>
       </div>
     );

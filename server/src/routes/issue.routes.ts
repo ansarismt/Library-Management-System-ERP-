@@ -48,16 +48,18 @@ router.get(
 
 
 /**
- * Get issues for member
+ * Get issues for member - Personal circulation access
  *
  * IMPORTANT:
  * This must come before /:id
+ * Personal users (STUDENT, FACULTY, MEMBER) can only access their own records
+ * Staff can access any member's records
  */
 router.get(
   "/member/:memberId",
   authenticate,
   authorizePermission(
-    PERMISSIONS.BOOK_ISSUE
+    PERMISSIONS.CIRCULATION_PERSONAL
   ),
   validateParams(issueMemberParamsSchema),
   getMemberIssuesController

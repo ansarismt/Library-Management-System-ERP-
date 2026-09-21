@@ -5,6 +5,8 @@ import {
   findUserById,
   updateLastLogin,
 } from "../repositories/user.repository.js";
+import { Member } from "../models/Member.js";
+import { User } from "../models/User.js";
 import {
   createRefreshToken,
   findRefreshToken,
@@ -28,6 +30,61 @@ const hashToken = (token: string): string => {
     .digest("hex");
 };
 
+export const generateMemberId = async () => {
+  const lastMember = await Member.findOne({}, { memberId: 1 })
+    .sort({ createdAt: -1 })
+    .lean()
+    .exec();
+
+  if (!lastMember?.memberId) {
+    return "MEM001";
+  }
+
+  const match = lastMember.memberId.match(/MEM(\d+)/);
+  if (!match) return "MEM001";
+
+  const nextNum = parseInt(match[1], 10) + 1;
+  return `MEM${String(nextNum).padStart(3, "0")}`;
+};
+
+const createMemberForUser = async (user: any) => {
+  const roleToMembershipType: Record<string, "STUDENT" | "FACULTY" | "STAFF" | "GUEST" | "MEMBER"> = {
+    STUDENT: "STUDENT",
+    FACULTY: "FACULTY",
+    MEMBER: "MEMBER",
+    LIBRARIAN: "STAFF",
+    ASSISTANT_LIBRARIAN: "STAFF",
+    LIBRARY_ADMIN: "STAFF",
+    SUPER_ADMIN: "STAFF",
+    AUDITOR: "STAFF",
+  };
+
+  const membershipType = roleToMembershipType[user.role] || "GUEST";
+
+  // Only create member for roles that should have a library membership
+  if (!["STUDENT", "FACULTY", "MEMBER"].includes(user.role)) {
+    return null;
+  }
+
+  const memberId = await generateMemberId();
+
+  const member = await Member.create({
+    memberId,
+    name: user.name,
+    email: user.email.toLowerCase().trim(),
+    membershipType,
+    status: "ACTIVE",
+    joinedAt: new Date(),
+  });
+
+  // Link the member to the user
+  await User.findByIdAndUpdate(user._id, {
+    memberId: member._id.toString(),
+  });
+
+  return member;
+};
+
 export const register = async (data: {
   name: string;
   email: string;
@@ -47,6 +104,9 @@ export const register = async (data: {
     passwordHash,
     role: "STUDENT",
   });
+
+  // Create Member record for student/faculty/member roles
+  await createMemberForUser(user);
 
   return {
     id: user._id.toString(),

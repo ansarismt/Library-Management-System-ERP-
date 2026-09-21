@@ -1,12 +1,14 @@
 import { Request, Response } from "express";
 import { findUserById } from "../repositories/user.repository.js";
 import { Member } from "../models/Member.js";
+import { User } from "../models/User.js";
 import { AuthenticatedRequest } from "../middleware/auth.middleware.js";
 import {
   login,
   logout,
   refreshAccessToken,
   register,
+  generateMemberId,
 } from "../services/auth.service.js";
 import { AUDIT_ACTIONS } from "../constants/auditActions.js";
 import { auditRequest } from "../services/audit.service.js";
@@ -259,11 +261,10 @@ export const meController = async (
     /*
      * 1. If User already has a memberId,
      *    try to find the Member using that value.
+     *    NOTE: user.memberId stores the Member._id (ObjectId), not the human-readable memberId field.
      */
     if (user.memberId) {
-      const member = await Member.findOne({
-        memberId: user.memberId,
-      })
+      const member = await Member.findById(user.memberId)
         .select("_id")
         .lean();
 
@@ -288,6 +289,35 @@ export const meController = async (
       if (member) {
         linkedMemberId = member._id.toString();
       }
+    }
+
+    /*
+     * 3. If still no Member found and user is a personal library member
+     *    (STUDENT, FACULTY, or MEMBER), create a Member record.
+     *    This handles existing users who registered before Member
+     *    auto-creation was implemented.
+     */
+    if (
+      !linkedMemberId &&
+      user.email &&
+      ["STUDENT", "FACULTY", "MEMBER"].includes(user.role)
+    ) {
+      const memberId = await generateMemberId();
+      const membershipType = user.role as "STUDENT" | "FACULTY" | "MEMBER";
+      const newMember = await Member.create({
+        memberId,
+        name: user.name,
+        email: user.email.toLowerCase().trim(),
+        membershipType,
+        status: "ACTIVE",
+        joinedAt: new Date(),
+      });
+      linkedMemberId = newMember._id.toString();
+
+      // Link the Member to the User for future lookups
+      await User.findByIdAndUpdate(user._id, {
+        memberId: newMember._id,
+      });
     }
 
     res.status(200).json({

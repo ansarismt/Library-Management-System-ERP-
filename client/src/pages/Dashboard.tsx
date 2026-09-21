@@ -79,10 +79,7 @@ function PersonalDashboard() {
     ],
   });
 
-  if (q.some((x) => x.isPending)) {
-    return <Loading />;
-  }
-
+  // Check for missing memberId first, before loading check
   if (!memberId) {
     return (
       <section className="panel">
@@ -98,6 +95,10 @@ function PersonalDashboard() {
         </div>
       </section>
     );
+  }
+
+  if (q.some((x) => x.isPending)) {
+    return <Loading />;
   }
 
   const [books, issues, fines, reservations] =

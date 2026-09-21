@@ -22,11 +22,9 @@ import {
   PageHeader,
   Select,
   SearchBox,
-  Loading,
 } from "../components/ui";
 
 import {
-  ErrorState,
   errorMessage,
 } from "../components/ErrorState";
 
@@ -39,8 +37,12 @@ import {
 } from "../utils/format";
 
 import { useAuth } from "../layout/AuthContext";
+import { useMemberId } from "../hooks/useMemberId";
 import type { Fine } from "../types";
 export default function Fines() {
+  const { user, can } = useAuth();
+  const memberId = useMemberId();
+  const isPersonalUser = ["STUDENT", "FACULTY", "MEMBER"].includes(user?.role ?? "");
   const q = useQuery({ queryKey: ["fines"], queryFn: finesApi.list });
   const iq = useQuery({ queryKey: ["issues"], queryFn: issuesApi.list });
   const [s, setS] = useState("");
@@ -48,26 +50,30 @@ export default function Fines() {
   const [waive, setWaive] = useState<Fine | null>(null);
   const [calc, setCalc] = useState(false);
   const qc = useQueryClient();
-  const { user, can } = useAuth();
-  if (q.isPending || iq.isPending) return <Loading />;
-  if (q.error) return <ErrorState error={q.error} />;
-  const rows = (q.data ?? []).filter((f: Fine) =>
-  `${nameOf(f.memberId)} ${titleOf(f.bookId)} ${f.status}`
-    .toLowerCase()
-    .includes(s.toLowerCase())
-);
-const outstanding = rows
-  .filter(
-    (f: Fine) => f.status === "UNPAID" || f.status === "PARTIAL"
-  )
-  .reduce(
-    (n: number, f: Fine) => n + f.amount - f.paidAmount,
+
+const allRows = (q.data ?? []) as Fine[];
+  const rows = isPersonalUser
+    ? allRows.filter((f) => f.memberId === memberId)
+    : allRows;
+
+  const filteredRows = rows.filter((f: Fine) =>
+    `${nameOf(f.memberId)} ${titleOf(f.bookId)} ${f.status}`
+      .toLowerCase()
+      .includes(s.toLowerCase())
+  );
+
+  const outstanding = rows
+    .filter(
+      (f: Fine) => f.status === "UNPAID" || f.status === "PARTIAL"
+    )
+    .reduce(
+      (n: number, f: Fine) => n + f.amount - f.paidAmount,
+      0
+    );
+  const paid = rows.reduce(
+    (n: number, f: Fine) => n + f.paidAmount,
     0
   );
- const paid = rows.reduce(
-  (n: number, f: Fine) => n + f.paidAmount,
-  0
-);
   return (
     <>
       <PageHeader
@@ -100,7 +106,7 @@ const outstanding = rows
               <CreditCard size={18} />
             </div>
           </div>
-          <strong>{rows.length}</strong>
+          <strong>{filteredRows.length}</strong>
         </div>
       </div>
       <div className="toolbar">
@@ -109,13 +115,13 @@ const outstanding = rows
           onChange={setS}
           placeholder="Search member, book or status…"
         />
-       {can("FINE_CREATE") && (
-  <Button variant="secondary" onClick={() => setCalc(true)}>
-    <RotateCcw size={16} /> Calculate from overdue loan
-  </Button>
-)}
+        {can("FINE_CREATE") && (
+          <Button variant="secondary" onClick={() => setCalc(true)}>
+            <RotateCcw size={16} /> Calculate from overdue loan
+          </Button>
+        )}
       </div>
-      {rows.length ? (
+      {filteredRows.length ? (
         <div className="panel table-wrap">
           <table>
             <thead>
@@ -130,7 +136,7 @@ const outstanding = rows
               </tr>
             </thead>
             <tbody>
-              {rows.map((f) => (
+              {filteredRows.map((f) => (
                 <tr key={f._id}>
                   <td>
                     <strong>{nameOf(f.memberId)}</strong>

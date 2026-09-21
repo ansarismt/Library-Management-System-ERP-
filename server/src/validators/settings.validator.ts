@@ -1,10 +1,22 @@
 import { z } from "zod";
 
+const optionalString = (max: number) =>
+  z.preprocess(
+    (val) => (typeof val === "string" && val.trim() === "" ? undefined : val),
+    z.string().trim().max(max).optional()
+  );
+
+const optionalEmail = () =>
+  z.preprocess(
+    (val) => (typeof val === "string" && val.trim() === "" ? undefined : val),
+    z.string().trim().email().max(254).optional()
+  );
+
 const librarySettingsSchema = z.object({
   libraryName: z.string().trim().min(1).max(150).optional(),
-  address: z.string().trim().max(500).optional(),
-  phone: z.string().trim().max(30).optional(),
-  email: z.string().trim().email().max(254).optional(),
+  address: optionalString(500),
+  phone: optionalString(30),
+  email: optionalEmail(),
 }).strict();
 
 const circulationSettingsSchema = z.object({
@@ -27,7 +39,10 @@ const notificationSettingsSchema = z.object({
 }).strict();
 
 const systemSettingsSchema = z.object({
-  timezone: z.string().trim().min(1).max(100).optional(),
+  timezone: z.preprocess(
+    (val) => (typeof val === "string" && val.trim() === "" ? undefined : val),
+    z.string().trim().min(1).max(100).optional()
+  ),
 }).strict();
 
 export const updateSettingsBodySchema = z.object({

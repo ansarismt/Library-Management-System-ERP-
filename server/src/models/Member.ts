@@ -13,7 +13,8 @@ export interface IMember extends Document {
     | "STUDENT"
     | "FACULTY"
     | "STAFF"
-    | "GUEST";
+    | "GUEST"
+    | "MEMBER";
 
   status:
     | "ACTIVE"
@@ -83,6 +84,7 @@ const memberSchema = new Schema<IMember>(
         "FACULTY",
         "STAFF",
         "GUEST",
+        "MEMBER",
       ],
       required: true,
       index: true,
