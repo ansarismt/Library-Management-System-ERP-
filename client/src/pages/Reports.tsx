@@ -9,19 +9,24 @@ import {
 import { booksApi, finesApi, issuesApi, membersApi } from "../api/services";
 import { Button, Loading, PageHeader } from "../components/ui";
 import { money } from "../utils/format";
+import { useAuth } from "../layout/AuthContext";
 
 export default function Reports() {
+  const { can } = useAuth();
+  const canViewIssues = can("BOOK_ISSUE");
+  const canViewFines = can("FINE_READ");
+
   const qs = useQueries({
     queries: [
       { queryKey: ["books"], queryFn: booksApi.list },
       { queryKey: ["members"], queryFn: membersApi.list },
-      { queryKey: ["issues"], queryFn: issuesApi.list },
-      { queryKey: ["fines"], queryFn: finesApi.list },
+      { queryKey: ["issues"], queryFn: issuesApi.list, enabled: canViewIssues },
+      { queryKey: ["fines"], queryFn: finesApi.list, enabled: canViewFines },
     ],
   });
-  if (qs.some((q) => q.isPending)) return <Loading />;
+  if (qs.some((q) => q.isLoading)) return <Loading />;
   const [books, members, issues, fines] = qs.map(
-    (q) => q.data as any[],
+    (q) => (q.data ?? []) as any[],
   );
   const active = issues.filter(
     (x) => x.status === "ISSUED",

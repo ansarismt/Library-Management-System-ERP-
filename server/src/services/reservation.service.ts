@@ -492,21 +492,29 @@ export const createReservationService = async (
       }
 
       /*
-       * Decrease availableCopies because this copy
-       * is now held by the reservation.
+       * Keep the denormalized book counter aligned with the physical
+       * copies after the reservation atomically holds one copy. This
+       * also repairs stale counters instead of failing the reservation.
        */
+      const remainingAvailableCopies =
+        await mongoose
+          .model("BookCopy")
+          .countDocuments({
+            bookId: new mongoose.Types.ObjectId(bookId),
+            status: "AVAILABLE",
+          })
+          .session(session)
+          .exec();
+
       const updatedBook =
         await Book.findOneAndUpdate(
           {
             _id:
               new mongoose.Types.ObjectId(bookId),
-            availableCopies: {
-              $gt: 0,
-            },
           },
           {
-            $inc: {
-              availableCopies: -1,
+            $set: {
+              availableCopies: remainingAvailableCopies,
             },
           },
           {

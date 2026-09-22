@@ -9,7 +9,12 @@ import {
   Plus,
   RefreshCw,
 } from "lucide-react";
-import { booksApi, copiesApi, issuesApi, membersApi } from "../api/services";
+import {
+  booksApi,
+  copiesApi,
+  issuesApi,
+  membersApi,
+} from "../api/services";
 import {
   Badge,
   Button,
@@ -31,8 +36,11 @@ export default function Circulation() {
   const qc = useQueryClient();
   const { user, can } = useAuth();
   const memberId = useMemberId();
-  const isPersonalUser = ["STUDENT", "FACULTY", "MEMBER"].includes(user?.role ?? "");
-  const isStaff = can("BOOK_ISSUE");
+  const canIssue = can("BOOK_ISSUE");
+  const canReturn = can("BOOK_RETURN");
+  const canRenew = can("BOOK_RENEW");
+  const isPersonalUser = can("CIRCULATION_PERSONAL") && !canIssue;
+  const isStaff = canIssue;
   const [tab, setTab] = useState<"active" | "history">("active");
   const [s, setS] = useState("");
   const [issueModal, setIssueModal] = useState(false);
@@ -52,7 +60,7 @@ export default function Circulation() {
   const membersQueryOptions = {
     queryKey: ["members"],
     queryFn: membersApi.list,
-    enabled: !isPersonalUser,
+    enabled: isStaff,
   };
 
   const qs = useQueries({
@@ -60,13 +68,13 @@ export default function Circulation() {
       issuesQueryOptions,
       membersQueryOptions,
       { queryKey: ["books"], queryFn: booksApi.list },
-      { queryKey: ["copies"], queryFn: copiesApi.list },
+      { queryKey: ["copies"], queryFn: copiesApi.list, enabled: isStaff },
     ],
   });
-  if (qs.some((q) => q.isPending)) return <Loading />;
+  if (qs.some((q) => q.isLoading)) return <Loading />;
   if (qs.some((q) => q.error))
     return <ErrorState error={qs.find((q) => q.error)?.error} />;
-  const [issues, members, books, copies] = qs.map((q) => q.data as any[]) as [
+  const [issues, members, books, copies] = qs.map((q) => q.data ?? []) as [
     Issue[],
     Member[],
     Book[],
@@ -81,6 +89,11 @@ export default function Circulation() {
         .toLowerCase()
         .includes(s.toLowerCase()),
     );
+  const hasActions = rows.some(
+    (issue) =>
+      issue.status === "ISSUED" &&
+      (canReturn || canRenew || canIssue),
+  );
   return (
     <>
       <PageHeader
@@ -128,7 +141,7 @@ export default function Circulation() {
                 <th>Due</th>
                 <th>Renewals</th>
                 <th>Status</th>
-                <th>Actions</th>
+                {hasActions && <th>Actions</th>}
               </tr>
             </thead>
             <tbody>
@@ -154,34 +167,40 @@ export default function Circulation() {
                         {late ? "OVERDUE" : x.status}
                       </Badge>
                     </td>
-                    <td>
-                      {x.status === "ISSUED" && isStaff && (
+                    {hasActions && <td>
+                      {x.status === "ISSUED" && (canReturn || canRenew) && (
                         <div className="inline-actions">
-                          <Button
-                            variant="secondary"
-                            onClick={() =>
-                              setAction({ kind: "return", issue: x })
-                            }
-                          >
-                            <Check size={14} /> Return
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            onClick={() =>
-                              setAction({ kind: "renew", issue: x })
-                            }
-                          >
-                            <RefreshCw size={14} /> Renew
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            onClick={() => setEditDueDate(x)}
-                          >
-                            <Edit size={14} /> Edit Due Date
-                          </Button>
+                          {canReturn && (
+                            <Button
+                              variant="secondary"
+                              onClick={() =>
+                                setAction({ kind: "return", issue: x })
+                              }
+                            >
+                              <Check size={14} /> Return
+                            </Button>
+                          )}
+                          {canRenew && (
+                            <Button
+                              variant="ghost"
+                              onClick={() =>
+                                setAction({ kind: "renew", issue: x })
+                              }
+                            >
+                              <RefreshCw size={14} /> Renew
+                            </Button>
+                          )}
+                          {canIssue && (
+                            <Button
+                              variant="ghost"
+                              onClick={() => setEditDueDate(x)}
+                            >
+                              <Edit size={14} /> Edit Due Date
+                            </Button>
+                          )}
                         </div>
                       )}
-                    </td>
+                    </td>}
                   </tr>
                 );
               })}
@@ -226,6 +245,8 @@ export default function Circulation() {
           onClose={() => setEditDueDate(null)}
           onSaved={() => {
             qc.invalidateQueries({ queryKey: ["issues"] });
+            qc.invalidateQueries({ queryKey: ["notifications"] });
+            qc.invalidateQueries({ queryKey: ["notification-unread-count"] });
             setEditDueDate(null);
           }}
         />

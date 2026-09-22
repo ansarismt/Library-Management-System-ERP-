@@ -30,12 +30,9 @@ import {
 import { useAuth } from "../layout/AuthContext";
 
 export default function Dashboard() {
-  const { user } = useAuth();
+  const { can } = useAuth();
 
-  const isPersonalUser =
-    user?.role === "STUDENT" ||
-    user?.role === "FACULTY" ||
-    user?.role === "MEMBER";
+  const isPersonalUser = can("CIRCULATION_PERSONAL") && !can("BOOK_ISSUE");
 
   if (isPersonalUser) {
     return <PersonalDashboard />;
@@ -426,6 +423,10 @@ function PersonalDashboard() {
  */
 
 function StaffDashboard() {
+  const { can } = useAuth();
+  const canViewIssues = can("BOOK_ISSUE");
+  const canViewFines = can("FINE_READ");
+
   const q = useQueries({
     queries: [
       {
@@ -439,10 +440,12 @@ function StaffDashboard() {
       {
         queryKey: ["issues"],
         queryFn: issuesApi.list,
+        enabled: canViewIssues,
       },
       {
         queryKey: ["fines"],
         queryFn: finesApi.list,
+        enabled: canViewFines,
       },
       {
         queryKey: ["copies"],
@@ -451,7 +454,7 @@ function StaffDashboard() {
     ],
   });
 
-  if (q.some((x) => x.isPending)) {
+  if (q.some((x) => x.isLoading)) {
     return <Loading />;
   }
 

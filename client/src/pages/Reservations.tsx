@@ -78,28 +78,28 @@ const getMemberCode = (reservation: Reservation) => {
 
 const statusConfig = {
   WAITING: {
-    label: "WAITING",
+    label: "Waiting",
     tone: "warning",
     icon: Clock3,
   },
   READY: {
-    label: "READY",
-    tone: "success",
-    icon: CheckCircle2,
-  },
-  FULFILLED: {
-    label: "FULFILLED",
+    label: "Ready for pickup",
     tone: "info",
     icon: CheckCircle2,
   },
+  FULFILLED: {
+    label: "Fulfilled",
+    tone: "success",
+    icon: CheckCircle2,
+  },
   CANCELLED: {
-    label: "CANCELLED",
-    tone: "danger",
+    label: "Cancelled",
+    tone: "neutral",
     icon: XCircle,
   },
   EXPIRED: {
-    label: "EXPIRED",
-    tone: "neutral",
+    label: "Expired",
+    tone: "danger",
     icon: XCircle,
   },
 } as const;
@@ -109,7 +109,10 @@ const statusConfig = {
 /* -------------------------------------------------------------------------- */
 
 function ReservationManagement() {
+  const { can } = useAuth();
   const queryClient = useQueryClient();
+  const canManage = can("RESERVATION_UPDATE");
+  const canCancel = can("RESERVATION_CANCEL");
 
   const reservationsQuery = useQuery({
     queryKey: ["reservations"],
@@ -263,6 +266,11 @@ function ReservationManagement() {
     readyMutation.isPending ||
     fulfillMutation.isPending ||
     cancelMutation.isPending;
+  const hasActions = reservations.some(
+    (reservation) =>
+      (canManage || canCancel) &&
+      (reservation.status === "WAITING" || reservation.status === "READY"),
+  );
 
   if (reservationsQuery.isLoading) {
     return (
@@ -330,59 +338,31 @@ function ReservationManagement() {
         </div>
       </div>
 
-      {/* Reservation workflow */}
-      <div className="panel">
+      <section className="panel reservation-workflow">
         <div className="panel-head">
           <div>
             <h2>Reservation workflow</h2>
-            <p>Manage reservations in queue order.</p>
+            <p>A copy is held immediately when available; waiting requests are promoted when staff allocate a copy.</p>
           </div>
         </div>
 
-        <div className="dashboard-grid">
-          <div className="panel">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-slate-100 p-2">
-                <span className="text-sm font-semibold text-slate-700">1</span>
-              </div>
-
-              <p className="font-medium text-slate-900">WAITING</p>
-            </div>
-
-            <p className="mt-3 text-sm text-slate-500">
-              Member is waiting in the reservation queue.
-            </p>
+        <div className="reservation-steps">
+          <div className="reservation-step">
+            <Badge tone="warning">WAITING</Badge>
+            <span>No copy is currently available.</span>
           </div>
-
-          <div className="panel">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-slate-100 p-2">
-                <span className="text-sm font-semibold text-slate-700">2</span>
-              </div>
-
-              <p className="font-medium text-slate-900">READY</p>
-            </div>
-
-            <p className="mt-3 text-sm text-slate-500">
-              Staff marks the reservation ready when the book can be picked up.
-            </p>
+          <div className="reservation-step-arrow">→</div>
+          <div className="reservation-step">
+            <Badge tone="info">READY</Badge>
+            <span>A physical copy is held for pickup.</span>
           </div>
-
-          <div className="panel">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-slate-100 p-2">
-                <span className="text-sm font-semibold text-slate-700">3</span>
-              </div>
-
-              <p className="font-medium text-slate-900">FULFILLED</p>
-            </div>
-
-            <p className="mt-3 text-sm text-slate-500">
-              Fulfill the reservation and create the library issue.
-            </p>
+          <div className="reservation-step-arrow">→</div>
+          <div className="reservation-step">
+            <Badge tone="success">FULFILLED</Badge>
+            <span>Staff hands over the book and creates the issue.</span>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* Empty */}
       {reservations.length === 0 ? (
@@ -406,7 +386,7 @@ function ReservationManagement() {
                 <th>Queue</th>
                 <th>Expires</th>
                 <th>Status</th>
-                <th></th>
+                {hasActions && <th>Actions</th>}
               </tr>
             </thead>
 
@@ -483,10 +463,9 @@ function ReservationManagement() {
                       </Badge>
                     </td>
 
-                    {/* Actions */}
-                    <td className="px-5 py-4 text-right">
+                    {hasActions && <td className="px-5 py-4 text-right">
                       <div className="inline-actions">
-                        {reservation.status === "WAITING" && (
+                        {canManage && reservation.status === "WAITING" && (
                           <Button
                             variant="secondary"
                             onClick={() =>
@@ -504,7 +483,7 @@ function ReservationManagement() {
                           </Button>
                         )}
 
-                        {reservation.status === "READY" && (
+                        {canManage && reservation.status === "READY" && (
                           <Button
                             variant="secondary"
                             onClick={() =>
@@ -522,7 +501,7 @@ function ReservationManagement() {
                           </Button>
                         )}
 
-                        {(reservation.status === "WAITING" ||
+                        {canCancel && (reservation.status === "WAITING" ||
                           reservation.status === "READY") && (
                           <Button
                             variant="danger"
@@ -536,12 +515,8 @@ function ReservationManagement() {
                           </Button>
                         )}
 
-                        {reservation.status !== "WAITING" &&
-                          reservation.status !== "READY" && (
-                            <span className="muted">—</span>
-                          )}
                       </div>
-                    </td>
+                    </td>}
                   </tr>
                 );
               })}
@@ -558,7 +533,7 @@ function ReservationManagement() {
 
 function MyReservations() {
   const queryClient = useQueryClient();
-  const { user } = useAuth();
+  const { user, can } = useAuth();
 
   const memberId = user?.memberId;
 
@@ -595,6 +570,7 @@ function MyReservations() {
       reservation.status === "WAITING" ||
       reservation.status === "READY",
   );
+  const hasActions = can("RESERVATION_CANCEL") && activeReservations.length > 0;
 
   const handleCancel = (reservation: Reservation) => {
     if (cancelMutation.isPending) return;
@@ -707,7 +683,7 @@ function MyReservations() {
                 <th>Queue</th>
                 <th>Expires</th>
                 <th>Status</th>
-                <th></th>
+                {hasActions && <th>Actions</th>}
               </tr>
             </thead>
 
@@ -764,7 +740,7 @@ function MyReservations() {
                       </Badge>
                     </td>
 
-                    <td className="px-5 py-4 text-right">
+                    {hasActions && <td className="px-5 py-4 text-right">
                       {canCancel ? (
                         <Button
                           variant="danger"
@@ -786,7 +762,7 @@ function MyReservations() {
                       ) : (
                         <span className="muted">—</span>
                       )}
-                    </td>
+                    </td>}
                   </tr>
                 );
               })}
@@ -805,7 +781,7 @@ function MyReservations() {
 export default function Reservations() {
   const { can } = useAuth();
 
-  if (can("RESERVATION_UPDATE")) {
+  if (can("RESERVATION_READ") && can("MEMBER_READ")) {
     return <ReservationManagement />;
   }
 

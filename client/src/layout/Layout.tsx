@@ -294,7 +294,13 @@ export function Layout() {
           <div className="topbar-spacer" />
 
           <div className="profile-wrapper" ref={profileRef}>
-            <div className="profile" onClick={handleProfileClick}>
+            <button
+              className="profile"
+              type="button"
+              onClick={handleProfileClick}
+              aria-haspopup="menu"
+              aria-expanded={profileOpen}
+            >
               <div className="avatar">
                 {user?.name
                   ?.slice(0, 1)
@@ -313,7 +319,7 @@ export function Layout() {
                   )}
                 </span>
               </div>
-            </div>
+            </button>
 
             {profileOpen && (
               <div className="profile-dropdown">
@@ -380,6 +386,15 @@ export function Layout() {
           <Outlet />
         </div>
       </main>
+
+      {mobile && (
+        <button
+          className="sidebar-scrim"
+          type="button"
+          aria-label="Close navigation"
+          onClick={() => setMobile(false)}
+        />
+      )}
 
       <button
         className="collapse"

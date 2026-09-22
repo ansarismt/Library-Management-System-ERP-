@@ -1016,7 +1016,7 @@ export const updateIssueService =
 
         // Notify affected member and authorized circulation staff
         await notifyDueDateUpdated(
-          issue.memberId.toString(),
+          issue.memberId,
           bookTitle,
           oldDueAt,
           newDueAt,

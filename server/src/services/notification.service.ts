@@ -3,7 +3,7 @@ import { Member } from "../models/Member.js";
 import { User } from "../models/User.js";
 import { Issue } from "../models/Issue.js";
 import { NotificationType } from "../models/Notification.js";
-import { createNotification, getNotificationsByUser, getUnreadCountByUser, markAllNotificationsAsRead, markNotificationAsRead } from "../repositories/notification.repository.js";
+import { createNotification, refreshNotification, getNotificationsByUser, getUnreadCountByUser, markAllNotificationsAsRead, markNotificationAsRead } from "../repositories/notification.repository.js";
 
 export interface CreateNotificationData {
   recipientUserId: string;
@@ -88,27 +88,38 @@ export const notifyAdmins = async (type: NotificationType, title: string, messag
   const admins = await User.find({ role: { $in: ["SUPER_ADMIN", "LIBRARY_ADMIN", "LIBRARIAN", "ASSISTANT_LIBRARIAN"] } }).select("_id").exec();
   await Promise.all(admins.map(admin => createNotification({ 
     recipientUserId: admin._id.toString(), 
-    type, title, message, relatedResourceType, relatedResourceId 
+    type, title, message, relatedResourceType, relatedResourceId
   })));
 };
 
 /** Create DUE_DATE_UPDATED notification for member and authorized circulation staff */
 export const notifyDueDateUpdated = async (
-  memberId: string,
+  memberId: unknown,
   bookTitle: string,
   oldDueAt: Date,
   newDueAt: Date,
   issueId: string
 ) => {
+  const message = `The due date for "${bookTitle}" has been changed from ${oldDueAt.toLocaleString()} to ${newDueAt.toLocaleString()}.`;
   // Notify the affected member
-  await notifyMemberEvent(
-    memberId,
-    "DUE_DATE_UPDATED",
-    "Due date updated",
-    `The due date for "${bookTitle}" has been changed from ${oldDueAt.toLocaleString()} to ${newDueAt.toLocaleString()}.`,
-    "ISSUE",
-    issueId
-  );
+  const resolvedMemberId = typeof memberId === "object" && memberId !== null && "_id" in memberId
+    ? String((memberId as { _id: unknown })._id)
+    : String(memberId);
+  const resolvedMember = await Member.findById(resolvedMemberId).select("memberId").exec();
+  if (resolvedMember) {
+    const user = await User.findOne({ memberId: resolvedMember.memberId }).select("_id").exec();
+    if (user) {
+      await refreshNotification({
+        recipientUserId: user._id.toString(),
+        recipientMemberId: resolvedMember._id.toString(),
+        type: "DUE_DATE_UPDATED",
+        title: "Due date updated",
+        message,
+        relatedResourceType: "ISSUE",
+        relatedResourceId: issueId,
+      });
+    }
+  }
 
   // Notify authorized circulation/admin staff
   await notifyAdmins(

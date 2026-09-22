@@ -202,8 +202,8 @@ export default function Audit() {
           </div>
         ) : (
           <>
-            <div className="table-wrap">
-              <table>
+            <div className="table-wrap audit-table-wrap">
+              <table className="audit-table">
                 <thead>
                   <tr>
                     <th>Date</th>
@@ -218,13 +218,13 @@ export default function Audit() {
                 <tbody>
                   {logs.map((log) => (
                     <tr key={log._id}>
-                      <td>
+                      <td className="audit-date">
                         <span className="nowrap">
                           {formatDate(log.createdAt)}
                         </span>
                       </td>
 
-                      <td>
+                      <td className="audit-actor">
                         {log.actorUserId ? (
                           <div>
                             <strong>{log.actorUserId.name}</strong>
@@ -237,20 +237,22 @@ export default function Audit() {
                         )}
                       </td>
 
-                      <td>
+                      <td className="audit-action">
                         <strong>
                           {actionLabel(log.action)}
                         </strong>
                       </td>
 
-                      <td>
+                      <td className="audit-resource">
                         <span>{log.resourceType}</span>
                         {log.resourceId && (
                           <small>{log.resourceId}</small>
                         )}
                       </td>
 
-                      <td>{log.description}</td>
+                      <td className="audit-description" title={log.description}>
+                        {log.description}
+                      </td>
 
                       <td>
                         {log.success ? (

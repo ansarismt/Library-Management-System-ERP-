@@ -205,8 +205,8 @@ export const reservationsApi = {
       notes?: string;
     },
   ) =>
-    unwrap<Reservation>(
-      api.patch<ApiResponse<Reservation>>(
+    unwrap<{ reservation: Reservation; issue: Issue }>(
+      api.patch<ApiResponse<{ reservation: Reservation; issue: Issue }>>(
         `/reservations/${id}/fulfill`,
         body,
       ),

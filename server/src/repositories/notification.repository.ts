@@ -21,6 +21,17 @@ export const createNotification = async (data: CreateNotificationData): Promise<
     { returnDocument: "after", upsert: true, runValidators: true }
   ).exec();
 
+export const refreshNotification = async (data: CreateNotificationData): Promise<INotification> =>
+  Notification.findOneAndUpdate(
+    { recipientUserId: new Types.ObjectId(data.recipientUserId), type: data.type,
+      ...(data.relatedResourceId ? { relatedResourceId: new Types.ObjectId(data.relatedResourceId) } : {}) },
+    { $set: { ...data, recipientUserId: new Types.ObjectId(data.recipientUserId),
+        ...(data.recipientMemberId ? { recipientMemberId: new Types.ObjectId(data.recipientMemberId) } : {}),
+        ...(data.relatedResourceId ? { relatedResourceId: new Types.ObjectId(data.relatedResourceId) } : {}),
+      isRead: false }, $unset: { readAt: 1 } },
+    { returnDocument: "after", upsert: true, runValidators: true }
+  ).exec();
+
 export const getNotificationsByUser = async (userId: string, page: number, limit: number, unreadOnly = false) => {
   const filter = { recipientUserId: new Types.ObjectId(userId), ...(unreadOnly ? { isRead: false } : {}) };
   const [items, total] = await Promise.all([

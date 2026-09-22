@@ -35,6 +35,7 @@ import {
 } from "../components/ErrorState";
 
 import { tone } from "../utils/format";
+import { useAuth } from "../layout/AuthContext";
 
 type UserWithMongoId = User & {
   _id?: string;
@@ -81,7 +82,9 @@ function getUserId(user: UserWithMongoId): string {
 }
 
 export default function Users() {
+  const { can } = useAuth();
   const queryClient = useQueryClient();
+  const hasActions = can("USER_UPDATE") || can("USER_DELETE");
 
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState<User | null | false>(false);
@@ -257,7 +260,7 @@ export default function Users() {
                 <th>Status</th>
                 <th>Member ID</th>
                 <th>Department</th>
-                <th></th>
+                {hasActions && <th>Actions</th>}
               </tr>
             </thead>
 
@@ -307,29 +310,33 @@ export default function Users() {
                       {user.department || "—"}
                     </td>
 
-                    <td>
+                    {hasActions && <td>
                       <div className="inline-actions">
-                        <Button
-                          variant="ghost"
-                          type="button"
-                          onClick={() =>
-                            handleEdit(user)
-                          }
-                        >
-                          <Pencil size={15} />
-                        </Button>
+                        {can("USER_UPDATE") && (
+                          <Button
+                            variant="ghost"
+                            type="button"
+                            onClick={() =>
+                              handleEdit(user)
+                            }
+                          >
+                            <Pencil size={15} />
+                          </Button>
+                        )}
 
-                        <Button
-                          variant="danger"
-                          type="button"
-                          onClick={() =>
-                            handleDelete(typedUser)
-                          }
-                        >
-                          <Trash2 size={15} />
-                        </Button>
+                        {can("USER_DELETE") && (
+                          <Button
+                            variant="danger"
+                            type="button"
+                            onClick={() =>
+                              handleDelete(typedUser)
+                            }
+                          >
+                            <Trash2 size={15} />
+                          </Button>
+                        )}
                       </div>
-                    </td>
+                    </td>}
                   </tr>
                 );
               })}

@@ -16,6 +16,7 @@ import {
 import { ErrorState, errorMessage } from "../components/ErrorState";
 import { date, tone } from "../utils/format";
 import type { Member } from "../types";
+import { useAuth } from "../layout/AuthContext";
 
 const blank = {
   memberId: "",
@@ -46,6 +47,7 @@ type MemberFormValues = {
 };
 
 export default function Members() {
+  const { can } = useAuth();
   const q = useQuery({
     queryKey: ["members"],
     queryFn: membersApi.list,
@@ -55,6 +57,7 @@ export default function Members() {
 
   const [s, setS] = useState("");
   const [modal, setModal] = useState<Member | null | false>(false);
+  const hasActions = can("MEMBER_UPDATE") || can("MEMBER_DELETE");
 
   const mut = useMutation({
     mutationFn: (v: {
@@ -100,7 +103,7 @@ export default function Members() {
         title="Members"
         subtitle="Keep member profiles, eligibility and membership status current."
         action={
-          <Button onClick={() => setModal(null)}>
+          can("MEMBER_CREATE") && <Button onClick={() => setModal(null)}>
             <Plus size={17} /> Add member
           </Button>
         }
@@ -125,14 +128,14 @@ export default function Members() {
                 <th>Department</th>
                 <th>Joined</th>
                 <th>Status</th>
-                <th></th>
+                {hasActions && <th>Actions</th>}
               </tr>
             </thead>
 
             <tbody>
               {rows.map((m) => (
                 <tr key={m._id}>
-                  <td>
+                  {hasActions && <td>
                     <div className="cell-person">
                       <div className="row-avatar">
                         {m.name[0]}
@@ -143,7 +146,7 @@ export default function Members() {
                         <small>{m.memberId}</small>
                       </div>
                     </div>
-                  </td>
+                  </td>}
 
                   <td>
                     <span className="stack">

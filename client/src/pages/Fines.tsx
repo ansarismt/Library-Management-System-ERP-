@@ -39,12 +39,26 @@ import {
 import { useAuth } from "../layout/AuthContext";
 import { useMemberId } from "../hooks/useMemberId";
 import type { Fine } from "../types";
+
+const formatOverdueDays = (days: number) =>
+  `${days} ${days === 1 ? "day" : "days"}`;
+
 export default function Fines() {
   const { user, can } = useAuth();
   const memberId = useMemberId();
-  const isPersonalUser = ["STUDENT", "FACULTY", "MEMBER"].includes(user?.role ?? "");
-  const q = useQuery({ queryKey: ["fines"], queryFn: finesApi.list });
-  const iq = useQuery({ queryKey: ["issues"], queryFn: issuesApi.list });
+  const isPersonalUser = can("CIRCULATION_PERSONAL") && !can("BOOK_ISSUE");
+  const q = useQuery({
+    queryKey: isPersonalUser ? ["my-fines", memberId] : ["fines"],
+    queryFn: () => isPersonalUser
+      ? finesApi.byMember(memberId!)
+      : finesApi.list(),
+    enabled: !isPersonalUser || Boolean(memberId),
+  });
+  const iq = useQuery({
+    queryKey: ["issues"],
+    queryFn: issuesApi.list,
+    enabled: can("FINE_CREATE"),
+  });
   const [s, setS] = useState("");
   const [pay, setPay] = useState<Fine | null>(null);
   const [waive, setWaive] = useState<Fine | null>(null);
@@ -52,14 +66,20 @@ export default function Fines() {
   const qc = useQueryClient();
 
 const allRows = (q.data ?? []) as Fine[];
-  const rows = isPersonalUser
-    ? allRows.filter((f) => f.memberId === memberId)
-    : allRows;
+  const rows = allRows;
 
   const filteredRows = rows.filter((f: Fine) =>
     `${nameOf(f.memberId)} ${titleOf(f.bookId)} ${f.status}`
       .toLowerCase()
       .includes(s.toLowerCase())
+  );
+  const hasActions = filteredRows.some(
+    (fine) =>
+      (can("FINE_UPDATE") &&
+        (fine.status === "UNPAID" || fine.status === "PARTIAL")) ||
+      (can("FINE_WAIVE") &&
+        fine.status !== "PAID" &&
+        fine.status !== "WAIVED"),
   );
 
   const outstanding = rows
@@ -132,7 +152,7 @@ const allRows = (q.data ?? []) as Fine[];
                 <th>Paid</th>
                 <th>Overdue</th>
                 <th>Status</th>
-                <th>Actions</th>
+                {hasActions && <th>Actions</th>}
               </tr>
             </thead>
             <tbody>
@@ -144,11 +164,11 @@ const allRows = (q.data ?? []) as Fine[];
                   <td>{titleOf(f.bookId)}</td>
                   <td>{money(f.amount)}</td>
                   <td>{money(f.paidAmount)}</td>
-                  <td>{f.daysOverdue} days</td>
+                  <td>{formatOverdueDays(f.daysOverdue)}</td>
                   <td>
                     <Badge tone={tone(f.status)}>{f.status}</Badge>
                   </td>
-                  <td>
+                  {hasActions && <td>
                     <div className="inline-actions">
                       {can("FINE_UPDATE") &&
   (f.status === "UNPAID" || f.status === "PARTIAL") && (
@@ -164,7 +184,7 @@ const allRows = (q.data ?? []) as Fine[];
     </Button>
   )}
                     </div>
-                  </td>
+                  </td>}
                 </tr>
               ))}
             </tbody>

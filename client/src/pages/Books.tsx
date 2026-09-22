@@ -146,10 +146,14 @@ export default function Books() {
   const canReserve = can("RESERVATION_CREATE");
   const canReadReservations = can("RESERVATION_READ");
 
-  const isStudent = user?.role === "STUDENT";
+  const isPersonalUser = can("CIRCULATION_PERSONAL") && !can("BOOK_ISSUE");
 
   const [tab, setTab] = useState<"books" | "copies">("books");
   const [search, setSearch] = useState("");
+  const [reservationNotice, setReservationNotice] = useState<{
+    bookId: string;
+    status: "WAITING" | "READY";
+  } | null>(null);
 
   const [bookModal, setBookModal] = useState<Book | null | false>(false);
   const [copyModal, setCopyModal] = useState<BookCopy | null | false>(false);
@@ -184,7 +188,7 @@ export default function Books() {
       }
       return reservationsApi.byMember(user.memberId);
     },
-    enabled: isStudent && canReadReservations && Boolean(user?.memberId),
+    enabled: isPersonalUser && canReadReservations && Boolean(user?.memberId),
   });
 
   /*
@@ -204,7 +208,17 @@ export default function Books() {
       });
     },
 
-    onSuccess: () => {
+    onSuccess: (reservation) => {
+      const reservationBookId =
+        typeof reservation.bookId === "string"
+          ? reservation.bookId
+          : reservation.bookId._id;
+
+      setReservationNotice({
+        bookId: reservationBookId,
+        status: reservation.status as "WAITING" | "READY",
+      });
+
       qc.invalidateQueries({
         queryKey: ["my-reservations", user?.memberId],
       });
@@ -294,7 +308,7 @@ export default function Books() {
    * Student reservation account check
    */
   const reservationAccountError =
-    isStudent &&
+    isPersonalUser &&
     canReserve &&
     canReadReservations &&
     !user?.memberId;
@@ -302,7 +316,7 @@ export default function Books() {
   if (
     bq.isPending ||
     (canCopyRead && cq.isPending) ||
-    (isStudent && canReadReservations && rq.isPending)
+    (isPersonalUser && canReadReservations && rq.isPending)
   ) {
     return <Loading />;
   }
@@ -325,7 +339,7 @@ export default function Books() {
     );
   }
 
-  if (isStudent && canReadReservations && rq.error) {
+  if (isPersonalUser && canReadReservations && rq.error) {
     return (
       <ErrorState
         error={rq.error}
@@ -339,7 +353,7 @@ export default function Books() {
       <PageHeader
         title="Books & copies"
         subtitle={
-          isStudent
+          isPersonalUser
             ? "Browse the library catalogue and reserve unavailable books."
             : "Manage catalogue records and physical inventory."
         }
@@ -442,7 +456,7 @@ export default function Books() {
               book.availableCopies === 0;
 
             const showReserveButton =
-              isStudent &&
+              isPersonalUser &&
               canReserve &&
               canReadReservations &&
               Boolean(user?.memberId) &&
@@ -499,6 +513,14 @@ export default function Books() {
                     </div>
                   ) : null}
 
+                  {reservationNotice?.bookId === book._id && (
+                    <div className="form-success" role="status">
+                      {reservationNotice.status === "READY"
+                        ? "Book reserved successfully. It is ready for pickup."
+                        : "No copy is currently available. You have been added to the waiting list."}
+                    </div>
+                  )}
+
                   {(canBookUpdate ||
                     canCopyCreate ||
                     canBookDelete ||
@@ -513,7 +535,9 @@ export default function Books() {
                           }
                         >
                           <CalendarPlus size={15} />
-                          Reserve
+                          {book.availableCopies > 0
+                            ? "Reserve"
+                            : "Join waitlist"}
                         </Button>
                       )}
 
@@ -524,10 +548,9 @@ export default function Books() {
                         >
                           <CalendarPlus size={15} />
 
-                          {existingReservation.status ===
-                          "READY"
+                          {existingReservation.status === "READY"
                             ? "Ready for pickup"
-                            : "Reserved"}
+                            : "Waiting"}
                         </Button>
                       )}
 
@@ -603,14 +626,14 @@ export default function Books() {
                 <th>Location</th>
                 <th>Condition</th>
                 <th>Status</th>
-                <th></th>
+                {canCopyUpdate && <th>Actions</th>}
               </tr>
             </thead>
 
             <tbody>
               {(filtered as BookCopy[]).map((c) => (
                 <tr key={c._id}>
-                  <td>
+                  {canCopyUpdate && <td>
                     <strong>
                       {c.accessionNumber}
                     </strong>
@@ -619,7 +642,7 @@ export default function Books() {
                       {c.barcode ||
                         "No barcode"}
                     </small>
-                  </td>
+                  </td>}
 
                   <td>{titleOf(c.bookId)}</td>
 

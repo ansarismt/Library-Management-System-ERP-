@@ -13,8 +13,8 @@ export function Button({
   return (
     <button
       className={`btn btn-${variant}`}
-      disabled={props.disabled || loading}
       {...props}
+      disabled={props.disabled || loading}
     >
       {loading ? <LoaderCircle className="spin" size={16} /> : null}
       {children}
@@ -73,7 +73,7 @@ export function Modal({
         <div className="modal-head">
           <h2>{title}</h2>
           <button className="icon-btn" onClick={onClose}>
-            <X size={18} />
+            <X size={18} aria-hidden="true" />
           </button>
         </div>
         {children}
