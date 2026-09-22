@@ -17,6 +17,7 @@ import {
 
 import { Book } from "../models/Book.js";
 import { BookCopy } from "../models/BookCopy.js";
+import Reservation from "../models/Reservation.js";
 import { Member } from "../models/Member.js";
 import { notifyMemberEvent, notifyAdmins, notifyDueDateUpdated } from "./notification.service.js";
 import { getSettings } from "../repositories/settings.repository.js";
@@ -43,6 +44,81 @@ export interface RenewBookData {
   additionalDays?: number;
   dueAt?: Date;
 }
+
+const promoteNextWaitingReservation = async (
+  bookId: mongoose.Types.ObjectId,
+  bookCopyId: mongoose.Types.ObjectId,
+  session: mongoose.ClientSession,
+) => {
+  const waitingReservation = await Reservation.findOne({
+    bookId,
+    status: "WAITING",
+  })
+    .sort({ reservedAt: 1, _id: 1 })
+    .session(session)
+    .exec();
+
+  if (!waitingReservation) {
+    return null;
+  }
+
+  const reservedCopy = await BookCopy.findOneAndUpdate(
+    {
+      _id: bookCopyId,
+      bookId,
+      status: "AVAILABLE",
+    },
+    {
+      $set: {
+        status: "RESERVED",
+        reservationId: waitingReservation._id,
+      },
+    },
+    {
+      session,
+      returnDocument: "after",
+      runValidators: true,
+    },
+  ).exec();
+
+  if (!reservedCopy) {
+    return null;
+  }
+
+  const updatedReservation = await Reservation.findOneAndUpdate(
+    {
+      _id: waitingReservation._id,
+      status: "WAITING",
+    },
+    {
+      $set: {
+        status: "READY",
+      },
+    },
+    {
+      session,
+      returnDocument: "after",
+      runValidators: true,
+    },
+  ).exec();
+
+  if (!updatedReservation) {
+    throw new Error("Failed to promote waiting reservation");
+  }
+
+  const availableCopies = await BookCopy.countDocuments({
+    bookId,
+    status: "AVAILABLE",
+  }).session(session).exec();
+
+  await Book.findOneAndUpdate(
+    { _id: bookId },
+    { $set: { availableCopies } },
+    { session, runValidators: true },
+  ).exec();
+
+  return updatedReservation;
+};
 
 /* =========================================================
    ISSUE BOOK
@@ -115,29 +191,13 @@ export const issueBookService = async (
     }
 
     if (bookCopy.bookId.toString() !== bookId) {
-      throw new Error(
-        "Book copy does not belong to the selected book",
-      );
+      throw new Error("Book copy does not belong to the selected book");
     }
 
-    /*
-     * Normal issue:
-     * AVAILABLE -> ISSUED
-     *
-     * Reservation fulfillment:
-     * RESERVED -> ISSUED
-     */
+    const isReservationFulfillment = bookCopy.status === "RESERVED";
 
-    const isReservationFulfillment =
-      bookCopy.status === "RESERVED";
-
-    if (
-      bookCopy.status !== "AVAILABLE" &&
-      !isReservationFulfillment
-    ) {
-      throw new Error(
-        `Book copy is not available. Current status: ${bookCopy.status}`,
-      );
+    if (bookCopy.status !== "AVAILABLE" && !isReservationFulfillment) {
+      throw new Error(`Book copy is not available. Current status: ${bookCopy.status}`);
     }
 
     /* -------------------------------------------------------
@@ -156,10 +216,6 @@ export const issueBookService = async (
         `Member is not active. Current status: ${member.status}`,
       );
     }
-
-    /* -------------------------------------------------------
-       LOAD LIBRARY SETTINGS
-    ------------------------------------------------------- */
 
     const settings = await getSettings();
 
@@ -617,7 +673,7 @@ export const returnBookService =
       }
 
       /* -------------------------------------------------------
-          BOOK AVAILABLE COPIES + 1
+        SYNCHRONIZE AVAILABILITY AND PROMOTE THE QUEUE
        ------------------------------------------------------- */
 
       /*
@@ -642,39 +698,23 @@ export const returnBookService =
        * copy is available, so availableCopies == totalCopies is
        * correct).
        */
-      const updatedBook =
-        await Book.findOneAndUpdate(
-          {
-            _id: issue.bookId,
-            $expr: {
-              $lt: [
-                "$availableCopies",
-                "$totalCopies",
-              ],
-            },
-          },
-          {
-            $inc: {
-              availableCopies: 1,
-            },
-          },
-          {
-            session,
-            returnDocument: "after",
-            runValidators: true,
-          },
-        );
+      const availableCopies = await BookCopy.countDocuments({
+        bookId: issue.bookId,
+        status: "AVAILABLE",
+      }).session(session).exec();
 
-      if (!updatedBook) {
-        /*
-         * availableCopies is already >= totalCopies.
-         *
-         * The BookCopy was still successfully returned
-         * (the update above succeeded with the ISSUED guard),
-         * so the return must NOT be aborted. Leaving the counter
-         * unchanged keeps 0 <= availableCopies <= totalCopies.
-         */
-      }
+      await Book.findOneAndUpdate(
+        { _id: issue.bookId },
+        { $set: { availableCopies } },
+        { session, runValidators: true },
+      ).exec();
+
+      const promotedReservation =
+        await promoteNextWaitingReservation(
+          issue.bookId,
+          issue.bookCopyId,
+          session,
+        );
 
       /* -------------------------------------------------------
          CALCULATE / CREATE FINE
@@ -705,6 +745,24 @@ export const returnBookService =
       ------------------------------------------------------- */
 
       await session.commitTransaction();
+
+      if (promotedReservation) {
+        const promotedBookTitle =
+          typeof issue.bookId === "object" &&
+          issue.bookId !== null &&
+          "title" in issue.bookId
+            ? (issue.bookId as unknown as { title?: string }).title ?? "Your book"
+            : "Your book";
+
+        await notifyMemberEvent(
+          promotedReservation.memberId,
+          "RESERVATION_READY",
+          "Book ready for pickup",
+          `"${promotedBookTitle}" is now ready for pickup. Please visit the library to collect your reserved copy.`,
+          "RESERVATION",
+          promotedReservation._id.toString(),
+        );
+      }
 
       /* -------------------------------------------------------
          FINAL ISSUE
